@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Studio — Creative Digital Agency</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- Custom Cursor -->
+  <div class="cursor" aria-hidden="true"></div>
+  <div class="cursor-follower" aria-hidden="true"></div>
+
+  <!-- Page Loader -->
+  <div class="page-loader" aria-hidden="true">
+    <div class="loader-text">
+      <span>S</span><span>T</span><span>U</span><span>D</span><span>I</span><span>O</span>
+    </div>
+  </div>
+
+  <!-- Navigation -->
+  <nav>
+    <div class="logo">Studio</div>
+    <div class="nav-links">
+      <a href="#intro">About</a>
+      <a href="#projects">Work</a>
+      <a href="#digital">Services</a>
+      <a href="#contact">Contact</a>
+    </div>
+    <button class="hamburger" aria-label="Toggle navigation menu" aria-expanded="false">
+      <span></span>
+      <span></span>
+      <span></span>
+    </button>
+  </nav>
+
+  <!-- Mobile Menu Overlay -->
+  <div class="mobile-menu" aria-hidden="true">
+    <a href="#intro">About</a>
+    <a href="#projects">Work</a>
+    <a href="#digital">Services</a>
+    <a href="#contact">Contact</a>
+  </div>
+
+  <!-- Hero Section -->
+  <section class="hero-section" id="hero">
+    <div class="side-img left-img" data-scroll data-scroll-speed="-1">
+      <img src="https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=400&q=80" alt="Abstract art left">
+    </div>
+    <div class="center-content">
+      <h1 class="hero-title" data-animate="split">
+        <span class="line"><span class="line-inner">We Create</span></span>
+        <span class="line"><span class="line-inner">Digital</span></span>
+        <span class="line"><span class="line-inner">Experiences</span></span>
+      </h1>
+      <p class="hero-subtitle" data-animate="fade-up">Award-winning studio crafting bold identities &amp; immersive digital products</p>
+      <a href="#projects" class="btn btn-outline-light magnetic" data-animate="fade-up">View Work</a>
+    </div>
+    <div class="side-img right-img" data-scroll data-scroll-speed="1">
+      <img src="https://images.unsplash.com/photo-1633186710895-309db2eca9e4?w=400&q=80" alt="Abstract art right">
+    </div>
+    <div class="scroll-indicator" data-animate="fade-up">
+      <span>Scroll</span>
+      <div class="scroll-line"></div>
+    </div>
+  </section>
+
+  <!-- Marquee -->
+  <div class="marquee" aria-hidden="true">
+    <div class="marquee-inner">
+      <span>Branding &bull; Web Design &bull; Development &bull; Motion &bull; Strategy &bull; Branding &bull; Web Design &bull; Development &bull; Motion &bull; Strategy &bull;&nbsp;</span>
+      <span>Branding &bull; Web Design &bull; Development &bull; Motion &bull; Strategy &bull; Branding &bull; Web Design &bull; Development &bull; Motion &bull; Strategy &bull;&nbsp;</span>
+    </div>
+  </div>
+
+  <!-- Intro Section -->
+  <section class="intro-section" id="intro">
+    <div class="intro-content">
+      <p class="label" data-animate="fade-up">Who We Are</p>
+      <h1 data-animate="fade-up">We design brands <br>and digital products <br>that <span class="serif-italic">inspire</span></h1>
+      <hr class="separator">
+      <p data-animate="fade-up">We are a multidisciplinary studio focused on creating meaningful connections between brands and their audiences through thoughtful design and innovative technology.</p>
+      <a href="#contact" class="btn btn-outline-dark magnetic" data-animate="fade-up">Learn More</a>
+    </div>
+
+    <!-- Stats -->
+    <div class="stats-row" data-animate="fade-up">
+      <div class="stat">
+        <span class="stat-number" data-count="150">0</span><span class="stat-suffix">+</span>
+        <span class="stat-label">Projects Completed</span>
+      </div>
+      <div class="stat">
+        <span class="stat-number" data-count="12">0</span>
+        <span class="stat-label">Years of Experience</span>
+      </div>
+      <div class="stat">
+        <span class="stat-number" data-count="35">0</span><span class="stat-suffix">+</span>
+        <span class="stat-label">Awards Won</span>
+      </div>
+      <div class="stat">
+        <span class="stat-number" data-count="98">0</span><span class="stat-suffix">%</span>
+        <span class="stat-label">Client Satisfaction</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- Projects Section -->
+  <section class="projects-section" id="projects">
+    <p class="label" data-animate="fade-up">Selected Work</p>
+    <h2 data-animate="fade-up">Featured Projects</h2>
+
+    <div class="projects-grid">
+      <article class="project-card" data-animate="fade-up">
+        <div class="project-img-wrapper">
+          <img src="https://images.unsplash.com/photo-1561070791-2526d30994b5?w=800&q=80" alt="Brand identity project" loading="lazy">
+          <div class="project-overlay">
+            <span class="btn btn-solid-white">View Project</span>
+          </div>
+        </div>
+        <div class="project-info">
+          <h3>Luminos Brand Identity</h3>
+          <span class="project-tag">Branding / Visual Identity</span>
+        </div>
+      </article>
+
+      <article class="project-card" data-animate="fade-up">
+        <div class="project-img-wrapper">
+          <img src="https://images.unsplash.com/photo-1460925895917-afdab827c52f?w=800&q=80" alt="Web platform project" loading="lazy">
+          <div class="project-overlay">
+            <span class="btn btn-solid-white">View Project</span>
+          </div>
+        </div>
+        <div class="project-info">
+          <h3>Nexus Web Platform</h3>
+          <span class="project-tag">Web Design / Development</span>
+        </div>
+      </article>
+
+      <article class="project-card" data-animate="fade-up">
+        <div class="project-img-wrapper">
+          <img src="https://images.unsplash.com/photo-1558655146-d09347e92766?w=800&q=80" alt="Mobile app project" loading="lazy">
+          <div class="project-overlay">
+            <span class="btn btn-solid-white">View Project</span>
+          </div>
+        </div>
+        <div class="project-info">
+          <h3>Prism Mobile App</h3>
+          <span class="project-tag">UI/UX / Mobile</span>
+        </div>
+      </article>
+
+      <article class="project-card" data-animate="fade-up">
+        <div class="project-img-wrapper">
+          <img src="https://images.unsplash.com/photo-1559028012-481c04fa702d?w=800&q=80" alt="Campaign project" loading="lazy">
+          <div class="project-overlay">
+            <span class="btn btn-solid-white">View Project</span>
+          </div>
+        </div>
+        <div class="project-info">
+          <h3>Aura Campaign</h3>
+          <span class="project-tag">Art Direction / Motion</span>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <!-- Digital Design Section -->
+  <section class="digital-section" id="digital">
+    <div class="content-wrapper">
+      <p class="label" data-animate="fade-up">What We Do</p>
+      <h3 data-animate="fade-up">Digital Design <br>&amp; Development</h3>
+      <p data-animate="fade-up">We craft premium digital experiences — from brand strategy and visual identity to immersive websites and applications that push creative boundaries.</p>
+
+      <div class="services-list" data-animate="fade-up">
+        <div class="service-item">
+          <span class="service-number">01</span>
+          <h4>Brand Strategy</h4>
+          <p>Defining your brand's voice, positioning, and visual language to stand out.</p>
+        </div>
+        <div class="service-item">
+          <span class="service-number">02</span>
+          <h4>Web Design</h4>
+          <p>Bespoke websites that combine aesthetic excellence with seamless usability.</p>
+        </div>
+        <div class="service-item">
+          <span class="service-number">03</span>
+          <h4>Development</h4>
+          <p>Clean, performant code that brings creative visions to life flawlessly.</p>
+        </div>
+        <div class="service-item">
+          <span class="service-number">04</span>
+          <h4>Motion Design</h4>
+          <p>Animations and micro-interactions that elevate the user experience.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="bottom-bar">
+      <span class="dim">Based in New York</span>
+      <span class="dim">Working Globally</span>
+      <span class="dim">Est. 2013</span>
+    </div>
+  </section>
+
+  <!-- CTA / Footer Section -->
+  <section class="cta-section" id="contact">
+    <p class="label" data-animate="fade-up">Get In Touch</p>
+    <h2 class="mixed-type" data-animate="fade-up">
+      Let's Build<br>
+      <span class="serif-italic">something</span> Great
+    </h2>
+    <p data-animate="fade-up">Ready to bring your vision to life? We'd love to hear about your project.</p>
+    <a href="mailto:hello@studio.com" class="btn btn-outline-dark magnetic" data-animate="fade-up">Start a Project</a>
+
+    <div class="footer-bottom">
+      <span>Studio &copy; 2025</span>
+      <span><a href="#">Instagram</a></span>
+      <span><a href="#">Twitter</a></span>
+      <span><a href="#">Behance</a></span>
+      <span><a href="#">Privacy Policy</a></span>
+    </div>
+    <p class="legal">All rights reserved. Designed with precision.</p>
+  </section>
+
+  <script src="script.js"></script>
+</body>
+</html>
