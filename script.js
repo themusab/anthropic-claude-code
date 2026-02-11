@@ -1,93 +1,171 @@
 /* ============================================
-   STUDIO — Interactive JavaScript
+   STUDIO — Awwwards-Tier Interactions
+   Lerp cursor, slide-up preloader,
+   staggered reveals, magnetic buttons
    ============================================ */
 
 (function () {
   'use strict';
 
-  // ---- Page Loader ----
-  const loader = document.querySelector('.page-loader');
+  /* ------------------------------------------------
+     Utility: Linear interpolation
+  ------------------------------------------------ */
+  function lerp(start, end, factor) {
+    return start + (end - start) * factor;
+  }
+
+  /* ------------------------------------------------
+     1. PAGE LOADER — letters in, letters out, slide up
+  ------------------------------------------------ */
+  var loader = document.querySelector('.page-loader');
 
   window.addEventListener('load', function () {
+    // Letters are already animating in via CSS.
+    // After they've settled, trigger the "done" class
+    // which plays the letter-out + slide-up animations.
     setTimeout(function () {
-      loader.classList.add('loaded');
+      if (loader) loader.classList.add('done');
+    }, 1100);
+
+    // After the slide-up finishes, reveal the page
+    setTimeout(function () {
       document.body.classList.add('loaded');
-    }, 1200);
+      if (loader) loader.style.pointerEvents = 'none';
+    }, 2100);
+
+    // Clean loader from DOM after all animations done
+    setTimeout(function () {
+      if (loader && loader.parentNode) {
+        loader.parentNode.removeChild(loader);
+      }
+    }, 3200);
   });
 
-  // ---- Custom Cursor ----
-  const cursor = document.querySelector('.cursor');
-  const follower = document.querySelector('.cursor-follower');
-  let mouseX = 0;
-  let mouseY = 0;
-  let followerX = 0;
-  let followerY = 0;
+  /* ------------------------------------------------
+     2. CUSTOM CURSOR — lerp-based, .active on hover
+  ------------------------------------------------ */
+  var cursor = document.querySelector('.cursor');
+  var follower = document.querySelector('.cursor-follower');
+  var isDesktop = window.matchMedia('(hover: hover) and (pointer: fine)').matches;
 
-  if (cursor && follower && window.matchMedia('(hover: hover)').matches) {
+  if (cursor && follower && isDesktop) {
+    var mouseX = -100;
+    var mouseY = -100;
+    var cursorX = -100;
+    var cursorY = -100;
+    var followerCurrentX = -100;
+    var followerCurrentY = -100;
+    var cursorVisible = false;
+
+    // Track real mouse position (no delay)
     document.addEventListener('mousemove', function (e) {
       mouseX = e.clientX;
       mouseY = e.clientY;
-      cursor.style.left = mouseX - 4 + 'px';
-      cursor.style.top = mouseY - 4 + 'px';
+      if (!cursorVisible) {
+        cursorVisible = true;
+        // Snap both to initial position to avoid slide-in from corner
+        cursorX = mouseX;
+        cursorY = mouseY;
+        followerCurrentX = mouseX;
+        followerCurrentY = mouseY;
+      }
     });
 
-    // Smooth follower animation
-    function animateFollower() {
-      followerX += (mouseX - followerX) * 0.12;
-      followerY += (mouseY - followerY) * 0.12;
-      follower.style.left = followerX - 20 + 'px';
-      follower.style.top = followerY - 20 + 'px';
-      requestAnimationFrame(animateFollower);
-    }
-    animateFollower();
+    // Hide cursor when mouse leaves the window
+    document.addEventListener('mouseleave', function () {
+      cursor.style.opacity = '0';
+      follower.style.opacity = '0';
+    });
 
-    // Cursor hover effect on interactive elements
-    var hoverTargets = document.querySelectorAll('a, button, .btn, .project-card');
+    document.addEventListener('mouseenter', function () {
+      cursor.style.opacity = '1';
+      follower.style.opacity = '1';
+    });
+
+    // RAF loop — smooth lerp
+    (function tick() {
+      // Cursor dot — fast tracking (lerp 0.2)
+      cursorX = lerp(cursorX, mouseX, 0.2);
+      cursorY = lerp(cursorY, mouseY, 0.2);
+      cursor.style.transform =
+        'translate3d(' + (cursorX - 5) + 'px, ' + (cursorY - 5) + 'px, 0)';
+
+      // Follower ring — slower tracking (lerp 0.08)
+      followerCurrentX = lerp(followerCurrentX, mouseX, 0.08);
+      followerCurrentY = lerp(followerCurrentY, mouseY, 0.08);
+      follower.style.transform =
+        'translate3d(' + (followerCurrentX - 20) + 'px, ' + (followerCurrentY - 20) + 'px, 0)';
+
+      requestAnimationFrame(tick);
+    })();
+
+    // .active class on interactive elements
+    var hoverTargets = document.querySelectorAll(
+      'a, button, .btn, .project-card, .service-item'
+    );
     hoverTargets.forEach(function (el) {
       el.addEventListener('mouseenter', function () {
-        cursor.classList.add('hover');
-        follower.classList.add('hover');
+        cursor.classList.add('active');
+        follower.classList.add('active');
       });
       el.addEventListener('mouseleave', function () {
-        cursor.classList.remove('hover');
-        follower.classList.remove('hover');
+        cursor.classList.remove('active');
+        follower.classList.remove('active');
       });
     });
   }
 
-  // ---- Magnetic Button Effect ----
-  var magneticBtns = document.querySelectorAll('.magnetic');
+  /* ------------------------------------------------
+     3. MAGNETIC BUTTONS
+  ------------------------------------------------ */
+  var magneticEls = document.querySelectorAll('.magnetic');
 
-  if (window.matchMedia('(hover: hover)').matches) {
-    magneticBtns.forEach(function (btn) {
-      btn.addEventListener('mousemove', function (e) {
-        var rect = btn.getBoundingClientRect();
-        var x = e.clientX - rect.left - rect.width / 2;
-        var y = e.clientY - rect.top - rect.height / 2;
-        btn.style.transform = 'translate(' + x * 0.3 + 'px, ' + y * 0.3 + 'px)';
+  if (isDesktop && magneticEls.length) {
+    magneticEls.forEach(function (el) {
+      var strength = 0.35; // pull strength
+      var resetEase = 'transform 0.6s cubic-bezier(0.16, 1, 0.3, 1)';
+
+      el.addEventListener('mousemove', function (e) {
+        var rect = el.getBoundingClientRect();
+        var dx = e.clientX - (rect.left + rect.width / 2);
+        var dy = e.clientY - (rect.top + rect.height / 2);
+        el.style.transition = 'none';
+        el.style.transform =
+          'translate(' + (dx * strength) + 'px, ' + (dy * strength) + 'px)';
       });
 
-      btn.addEventListener('mouseleave', function () {
-        btn.style.transform = 'translate(0, 0)';
+      el.addEventListener('mouseleave', function () {
+        el.style.transition = resetEase;
+        el.style.transform = 'translate(0, 0)';
       });
     });
   }
 
-  // ---- Navigation Scroll Effect ----
+  /* ------------------------------------------------
+     4. NAVIGATION — shrink on scroll
+  ------------------------------------------------ */
   var nav = document.querySelector('nav');
-  var lastScroll = 0;
 
-  window.addEventListener('scroll', function () {
-    var currentScroll = window.pageYOffset;
-    if (currentScroll > 100) {
-      nav.classList.add('scrolled');
-    } else {
-      nav.classList.remove('scrolled');
-    }
-    lastScroll = currentScroll;
-  }, { passive: true });
+  if (nav) {
+    var ticking = false;
+    window.addEventListener('scroll', function () {
+      if (!ticking) {
+        requestAnimationFrame(function () {
+          if (window.pageYOffset > 80) {
+            nav.classList.add('scrolled');
+          } else {
+            nav.classList.remove('scrolled');
+          }
+          ticking = false;
+        });
+        ticking = true;
+      }
+    }, { passive: true });
+  }
 
-  // ---- Mobile Menu ----
+  /* ------------------------------------------------
+     5. MOBILE MENU — hamburger + overlay
+  ------------------------------------------------ */
   var hamburger = document.querySelector('.hamburger');
   var mobileMenu = document.querySelector('.mobile-menu');
 
@@ -95,12 +173,11 @@
     hamburger.addEventListener('click', function () {
       var isOpen = hamburger.classList.toggle('active');
       mobileMenu.classList.toggle('open');
-      hamburger.setAttribute('aria-expanded', isOpen);
-      mobileMenu.setAttribute('aria-hidden', !isOpen);
+      hamburger.setAttribute('aria-expanded', String(isOpen));
+      mobileMenu.setAttribute('aria-hidden', String(!isOpen));
       document.body.style.overflow = isOpen ? 'hidden' : '';
     });
 
-    // Close menu on link click
     mobileMenu.querySelectorAll('a').forEach(function (link) {
       link.addEventListener('click', function () {
         hamburger.classList.remove('active');
@@ -110,119 +187,147 @@
         document.body.style.overflow = '';
       });
     });
+
+    // Close on Escape key
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && mobileMenu.classList.contains('open')) {
+        hamburger.click();
+      }
+    });
   }
 
-  // ---- Scroll Reveal Animations ----
-  var animateElements = document.querySelectorAll('[data-animate]');
+  /* ------------------------------------------------
+     6. SCROLL REVEAL — IntersectionObserver
+     Handles data-animate="fade-up"
+  ------------------------------------------------ */
+  var revealElements = document.querySelectorAll('[data-animate="fade-up"]');
 
-  var observer = new IntersectionObserver(function (entries) {
-    entries.forEach(function (entry) {
-      if (entry.isIntersecting) {
-        entry.target.classList.add('visible');
-        observer.unobserve(entry.target);
-      }
+  if (revealElements.length) {
+    var revealObserver = new IntersectionObserver(
+      function (entries) {
+        entries.forEach(function (entry) {
+          if (entry.isIntersecting) {
+            entry.target.classList.add('visible');
+            revealObserver.unobserve(entry.target);
+          }
+        });
+      },
+      { threshold: 0.12, rootMargin: '0px 0px -60px 0px' }
+    );
+
+    revealElements.forEach(function (el) {
+      revealObserver.observe(el);
     });
-  }, {
-    threshold: 0.15,
-    rootMargin: '0px 0px -50px 0px'
-  });
+  }
 
-  animateElements.forEach(function (el) {
-    observer.observe(el);
-  });
-
-  // ---- Counter Animation ----
+  /* ------------------------------------------------
+     7. COUNTER ANIMATION — count up on scroll
+  ------------------------------------------------ */
   var counters = document.querySelectorAll('[data-count]');
 
-  var counterObserver = new IntersectionObserver(function (entries) {
-    entries.forEach(function (entry) {
-      if (entry.isIntersecting) {
-        var el = entry.target;
-        var target = parseInt(el.getAttribute('data-count'), 10);
-        var duration = 2000;
-        var start = 0;
-        var startTime = null;
+  if (counters.length) {
+    var counterObserver = new IntersectionObserver(
+      function (entries) {
+        entries.forEach(function (entry) {
+          if (!entry.isIntersecting) return;
 
-        function easeOutExpo(t) {
-          return t === 1 ? 1 : 1 - Math.pow(2, -10 * t);
-        }
+          var el = entry.target;
+          var target = parseInt(el.getAttribute('data-count'), 10);
+          var duration = 2200;
+          var startTime = null;
 
-        function updateCounter(timestamp) {
-          if (!startTime) startTime = timestamp;
-          var progress = Math.min((timestamp - startTime) / duration, 1);
-          var easedProgress = easeOutExpo(progress);
-          var current = Math.floor(easedProgress * target);
-          el.textContent = current;
-          if (progress < 1) {
-            requestAnimationFrame(updateCounter);
-          } else {
-            el.textContent = target;
+          function easeOutExpo(t) {
+            return t >= 1 ? 1 : 1 - Math.pow(2, -12 * t);
           }
-        }
 
-        requestAnimationFrame(updateCounter);
-        counterObserver.unobserve(el);
-      }
+          function step(now) {
+            if (!startTime) startTime = now;
+            var progress = Math.min((now - startTime) / duration, 1);
+            el.textContent = Math.floor(easeOutExpo(progress) * target);
+            if (progress < 1) {
+              requestAnimationFrame(step);
+            } else {
+              el.textContent = target;
+            }
+          }
+
+          requestAnimationFrame(step);
+          counterObserver.unobserve(el);
+        });
+      },
+      { threshold: 0.6 }
+    );
+
+    counters.forEach(function (c) {
+      counterObserver.observe(c);
     });
-  }, {
-    threshold: 0.5
-  });
+  }
 
-  counters.forEach(function (counter) {
-    counterObserver.observe(counter);
-  });
-
-  // ---- Smooth Scroll for Anchor Links ----
+  /* ------------------------------------------------
+     8. SMOOTH ANCHOR SCROLLING
+  ------------------------------------------------ */
   document.querySelectorAll('a[href^="#"]').forEach(function (anchor) {
     anchor.addEventListener('click', function (e) {
-      var targetId = this.getAttribute('href');
-      if (targetId === '#') return;
-      var targetEl = document.querySelector(targetId);
-      if (targetEl) {
-        e.preventDefault();
-        var offsetTop = targetEl.getBoundingClientRect().top + window.pageYOffset - 80;
-        window.scrollTo({
-          top: offsetTop,
-          behavior: 'smooth'
-        });
-      }
+      var id = this.getAttribute('href');
+      if (id === '#') return;
+      var target = document.querySelector(id);
+      if (!target) return;
+      e.preventDefault();
+
+      var top = target.getBoundingClientRect().top + window.pageYOffset - 80;
+      window.scrollTo({ top: top, behavior: 'smooth' });
     });
   });
 
-  // ---- Parallax on Side Images ----
+  /* ------------------------------------------------
+     9. PARALLAX — hero side images
+  ------------------------------------------------ */
   var sideImages = document.querySelectorAll('.side-img');
 
-  if (sideImages.length && window.matchMedia('(min-width: 769px)').matches) {
+  if (sideImages.length && isDesktop) {
+    var parallaxTicking = false;
+
     window.addEventListener('scroll', function () {
-      var scrollY = window.pageYOffset;
-      sideImages.forEach(function (img, i) {
-        var speed = i === 0 ? -0.15 : 0.15;
-        img.style.transform = 'translateY(' + scrollY * speed + 'px)';
-      });
+      if (!parallaxTicking) {
+        requestAnimationFrame(function () {
+          var scrollY = window.pageYOffset;
+          // Only parallax while hero is in view
+          if (scrollY < window.innerHeight * 1.2) {
+            sideImages[0].style.transform =
+              'translateY(calc(-50% + ' + (scrollY * -0.12) + 'px))';
+            if (sideImages[1]) {
+              sideImages[1].style.transform =
+                'translateY(calc(-50% + ' + (scrollY * 0.12) + 'px))';
+            }
+          }
+          parallaxTicking = false;
+        });
+        parallaxTicking = true;
+      }
     }, { passive: true });
   }
 
-  // ---- Tilt Effect on Project Cards ----
-  var projectCards = document.querySelectorAll('.project-img-wrapper');
+  /* ------------------------------------------------
+     10. TILT EFFECT — project cards (perspective)
+  ------------------------------------------------ */
+  var projectWrappers = document.querySelectorAll('.project-img-wrapper');
 
-  if (window.matchMedia('(hover: hover)').matches) {
-    projectCards.forEach(function (card) {
+  if (isDesktop && projectWrappers.length) {
+    projectWrappers.forEach(function (card) {
       card.addEventListener('mousemove', function (e) {
         var rect = card.getBoundingClientRect();
         var x = (e.clientX - rect.left) / rect.width;
         var y = (e.clientY - rect.top) / rect.height;
-        var rotateX = (y - 0.5) * -8;
-        var rotateY = (x - 0.5) * 8;
-        card.style.transform = 'perspective(800px) rotateX(' + rotateX + 'deg) rotateY(' + rotateY + 'deg)';
+        var rotateX = ((y - 0.5) * -6).toFixed(2);
+        var rotateY = ((x - 0.5) * 6).toFixed(2);
+        card.style.transition = 'none';
+        card.style.transform =
+          'perspective(600px) rotateX(' + rotateX + 'deg) rotateY(' + rotateY + 'deg)';
       });
 
       card.addEventListener('mouseleave', function () {
-        card.style.transform = 'perspective(800px) rotateX(0) rotateY(0)';
-        card.style.transition = 'transform 0.5s ease';
-      });
-
-      card.addEventListener('mouseenter', function () {
-        card.style.transition = 'none';
+        card.style.transition = 'transform 0.6s cubic-bezier(0.16, 1, 0.3, 1)';
+        card.style.transform = 'perspective(600px) rotateX(0) rotateY(0)';
       });
     });
   }
