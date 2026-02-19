@@ -1,0 +1,719 @@
+//@version=5
+indicator("VertexAlgo - Edge Signals v2", overlay=true, max_boxes_count=500, max_labels_count=500, max_lines_count=500)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ANTI-REPAINT ARCHITECTURE
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// EVERY signal, entry, SL, and TP uses CONFIRMED (closed) bar data ONLY.
+// - All signal logic is gated behind barstate.isconfirmed
+// - All indicator inputs use [1] (previous closed bar) where needed
+// - request.security uses barmerge.lookahead_off (no future data)
+// - NO trade is ever deleted from the chart — wins AND losses both display
+// - SL hits are shown honestly with a visible "SL" label
+// - Entry price is the OPEN of the NEXT bar after signal (realistic fill)
+//
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// INPUT CONFIGURATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var g_s = "── Signal ──"
+string i_m     = input.string(defval="Day Trading", title="Mode", options=["Day Trading", "Swing"], group=g_s, display=display.none)
+float  i_sv    = input.float(defval=1.0, title="Sensitivity", minval=0.5, maxval=2.0, step=0.1, group=g_s, display=display.none, tooltip="Lower = fewer but higher quality signals")
+
+var g_r = "── Risk ──"
+float  i_rr    = input.float(defval=2.0, title="Reward:Risk", minval=1.0, maxval=5.0, step=0.25, group=g_r, display=display.none)
+float  i_sl    = input.float(defval=1.5, title="SL Multiplier (ATR)", minval=0.75, maxval=3.0, step=0.25, group=g_r, display=display.none)
+
+var g_d = "── Display ──"
+color  i_lc       = input.color(defval=#00E676, title="Long Color", group=g_d, display=display.none)
+color  i_sc       = input.color(defval=#FF5252, title="Short Color", group=g_d, display=display.none)
+color  i_tc       = input.color(defval=#AA00FF, title="TP Tag", group=g_d, display=display.none)
+color  i_slTag    = input.color(defval=#FF5252, title="SL Tag", group=g_d, display=display.none)
+bool   i_showDash = input.bool(defval=true, title="Show MTF Dashboard", group=g_d, display=display.none)
+bool   i_showStats = input.bool(defval=true, title="Show Win/Loss Stats", group=g_d, display=display.none)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FIXED LINE COLORS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+color _entryBlue = #0066FF
+color _tpGreen   = #00E676
+color _slRed     = #FF5252
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HISTORY ARRAYS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var array<box>   _arrTPBox     = array.new_box()
+var array<box>   _arrSLBox     = array.new_box()
+var array<label> _arrEntryLbl  = array.new_label()
+var array<label> _arrResultLbl = array.new_label()
+var array<line>  _arrEntryLine = array.new_line()
+var array<line>  _arrTPLine    = array.new_line()
+var array<line>  _arrSLLine    = array.new_line()
+var array<int>   _arrBar       = array.new_int()
+var array<int>   _arrDir       = array.new_int()
+var array<bool>  _arrActive    = array.new_bool()
+var array<float> _arrEntryPx   = array.new_float()
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ASSET & MODE DETECTION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+_tkr  = str.upper(syminfo.ticker)
+_base = str.upper(syminfo.basecurrency)
+bool _isETH = str.contains(_tkr, "ETH") or _base == "ETH"
+bool _isBTC = not _isETH
+
+bool _day = i_m == "Day Trading"
+bool _swg = i_m == "Swing"
+
+// Adaptive periods based on mode
+int _p1 = _day ? 10  : 18
+int _p2 = _day ? 21  : 40
+int _p3 = _day ? 50  : 100
+
+// Asset-specific weights
+float _tw  = _isBTC ? 1.15 : 1.0    // trend weight
+float _mw  = _isBTC ? 0.85 : 1.1    // momentum weight
+float _rrM = _day ? 1.0 : 1.4
+float _rr  = i_rr * _rrM
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// COOLDOWN & THRESHOLD (STRICTER FOR SNIPER SIGNALS)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+int   _cdB  = 12                     // base cooldown (was 8, increased)
+int   _cdF  = _day ? 18 : 22        // post-loss cooldown (was 12/15)
+
+// Higher base threshold = fewer, higher quality signals
+float _thB  = _day ? 3.5 : 4.5      // was 2.5/3.5
+float _th   = _thB / i_sv
+
+// Minimum bars between ANY signals (anti-cluster)
+int   _minGap = _day ? 15 : 25
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CONFIRMED BAR DATA (ANTI-REPAINT)
+// ═══════════════════════════════════════════════════════════════════════════════
+// Use [1] for ALL signal logic — we only evaluate CLOSED bars
+// Entry fills at open of CURRENT bar when signal was on PREVIOUS closed bar
+
+float _c1  = close[1]
+float _o1  = open[1]
+float _h1  = high[1]
+float _l1  = low[1]
+float _c2  = close[2]
+float _o2  = open[2]
+float _h2  = high[2]
+float _l2  = low[2]
+float _v1  = volume[1]
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// INDICATORS (ALL ON CONFIRMED DATA)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+float _e1   = ta.ema(close, _p1)[1]
+float _e2   = ta.ema(close, _p2)[1]
+float _e3   = ta.ema(close, _p3)[1]
+float _e200 = ta.ema(close, 200)[1]
+
+float _atr   = ta.atr(14)[1]
+float _atrM  = ta.sma(ta.atr(14), 50)[1]
+float _vExp  = nz(_atr / _atrM, 1.0)
+
+float _rsi    = ta.rsi(close, 14)[1]
+float _rsiP   = ta.rsi(close, 14)[2]    // previous RSI for divergence
+float _rsiF   = ta.rsi(close, 7)[1]
+float _rsiF_p = ta.rsi(close, 7)[2]
+
+[_mL, _mS, _mH] = ta.macd(close, 12, 26, 9)
+float _macdH  = _mH[1]
+float _macdH_p = _mH[2]
+float _macdL  = _mL[1]
+float _macdS  = _mS[1]
+
+float _mom  = ta.mom(close, 8)[1]
+float _momP = ta.mom(close, 8)[2]
+
+float _volM = ta.sma(volume, 20)[1]
+float _volR = nz(_v1 / _volM, 1.0)
+
+// ADX for trend strength (additional filter)
+float _adx = ta.rma(math.abs(ta.change(high[1]) - ta.change(low[1])), 14)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// STRUCTURE ANALYSIS (S/R, SWING HIGHS/LOWS)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Swing high/low detection (confirmed bars only)
+bool _swingHigh = _h2 > _h1 and _h2 > high[3] and _h2 > high[4]
+bool _swingLow  = _l2 < _l1 and _l2 < low[3] and _l2 < low[4]
+
+// Recent swing levels for S/R context
+var float _lastSwingHigh = na
+var float _lastSwingLow  = na
+
+if _swingHigh
+    _lastSwingHigh := _h2
+
+if _swingLow
+    _lastSwingLow := _l2
+
+// Price near support/resistance (within 0.5% of swing level)
+bool _nearSupport    = not na(_lastSwingLow) and _l1 <= _lastSwingLow * 1.005 and _c1 > _lastSwingLow
+bool _nearResistance = not na(_lastSwingHigh) and _h1 >= _lastSwingHigh * 0.995 and _c1 < _lastSwingHigh
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TREND ANALYSIS (CONFIRMED DATA)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+bool _bullS = _e1 > _e2 and _e2 > _e3
+bool _bearS = _e1 < _e2 and _e2 < _e3
+bool _bullP = _e1 > _e2 or _c1 > _e2
+bool _bearP = _e1 < _e2 or _c1 < _e2
+
+bool _htfB = _c1 > _e200
+bool _htfS = _c1 < _e200
+
+// EMA slope (confirmed)
+float _e1_prev = ta.ema(close, _p1)[2]
+float _e2_prev = ta.ema(close, _p2)[2]
+bool _e1U = _e1 > _e1_prev
+bool _e1D = _e1 < _e1_prev
+bool _e2U = _e2 > _e2_prev
+bool _e2D = _e2 < _e2_prev
+
+// Trend strength
+float _tS = math.abs(_e1 - _e2) / _atr
+bool _strU = _bullS and _tS > 0.8 and _e1U    // was 0.6, increased
+bool _strD = _bearS and _tS > 0.8 and _e1D
+
+// EMA alignment score (how well-ordered the EMAs are)
+float _emaAlignBull = (_e1 > _e2 ? 1.0 : 0.0) + (_e2 > _e3 ? 1.0 : 0.0) + (_e3 > _e200 ? 1.0 : 0.0)
+float _emaAlignBear = (_e1 < _e2 ? 1.0 : 0.0) + (_e2 < _e3 ? 1.0 : 0.0) + (_e3 < _e200 ? 1.0 : 0.0)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MOMENTUM ANALYSIS (CONFIRMED DATA)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+float _body1  = math.abs(_c1 - _o1)
+float _range1 = _h1 - _l1
+bool _bullC   = _c1 > _o1 and _body1 > _range1 * 0.45    // was 0.4
+bool _bearC   = _c1 < _o1 and _body1 > _range1 * 0.45
+bool _strBC   = _bullC and _body1 > _atr * 0.55           // was 0.5
+bool _strSC   = _bearC and _body1 > _atr * 0.55
+
+// Two-bar confirmation: current AND previous bar agree
+bool _twoBullC = _bullC and _c2 > _o2
+bool _twoBearC = _bearC and _c2 < _o2
+
+// RSI conditions (tighter ranges)
+bool _rsiB    = _rsi > 42 and _rsi < 72     // was 40/78 — avoid overbought
+bool _rsiBr   = _rsi < 58 and _rsi > 28     // was 60/22 — avoid oversold
+bool _rsiU    = _rsiF > _rsiF_p
+bool _rsiD    = _rsiF < _rsiF_p
+
+// RSI divergence detection
+bool _rsiBullDiv = _c1 < _c2 and _rsi > _rsiP   // price lower, RSI higher
+bool _rsiBearDiv = _c1 > _c2 and _rsi < _rsiP   // price higher, RSI lower
+
+// MACD conditions
+bool _macdB    = _macdH > 0 or (_macdH > _macdH_p and _macdL > _macdS)
+bool _macdBr   = _macdH < 0 or (_macdH < _macdH_p and _macdL < _macdS)
+bool _macdXUp  = _macdH > 0 and _macdH_p <= 0   // histogram crosses above zero
+bool _macdXDn  = _macdH < 0 and _macdH_p >= 0   // histogram crosses below zero
+
+// Momentum
+bool _momU  = _mom > 0 and _c1 > _c2
+bool _momD  = _mom < 0 and _c1 < _c2
+bool _momAccelU = _mom > _momP and _mom > 0    // momentum accelerating up
+bool _momAccelD = _mom < _momP and _mom < 0    // momentum accelerating down
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// VOLUME CONFIRMATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+bool _volConfirm    = _volR > 1.1                         // above average volume
+bool _volStrong     = _volR > 1.5                         // strong volume
+bool _volDry        = _volR < 0.6                         // low volume (avoid)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PULLBACK DETECTION (CONFIRMED DATA)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+bool _tE1L = _l1 <= _e1 * 1.003 and _c1 > _e1
+bool _tE2L = _l1 <= _e2 * 1.006 and _c1 > _e2
+bool _tE1S = _h1 >= _e1 * 0.997 and _c1 < _e1
+bool _tE2S = _h1 >= _e2 * 0.994 and _c1 < _e2
+
+bool _pbL = _bullP and (_tE1L or _tE2L) and _bullC
+bool _pbS = _bearP and (_tE1S or _tE2S) and _bearC
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// WICK REJECTION (CONFIRMED DATA)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+float _lW = math.min(_c1, _o1) - _l1
+float _uW = _h1 - math.max(_c1, _o1)
+bool _bWick = _lW > _body1 * 1.2 and _c1 > _o1    // was 1.0
+bool _sWick = _uW > _body1 * 1.2 and _c1 < _o1
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SESSION FILTER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+_hr = hour(time, "UTC")
+bool _londonOpen  = _hr >= 7 and _hr < 10
+bool _nyOpen      = _hr >= 13 and _hr < 16
+bool _overlap     = _hr >= 13 and _hr < 16    // London/NY overlap
+bool _primeTime   = _hr >= 7 and _hr < 20     // main trading hours
+bool _offHours    = not _primeTime
+
+// Session multiplier — stronger during prime hours
+float _sM = _overlap ? 1.15 : (_primeTime ? 1.0 : 0.75)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// VOLATILITY FILTER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Avoid extremely low or high volatility
+bool _volOK = _vExp > 0.6 and _vExp < 2.5
+// Ideal volatility range for entries
+bool _volIdeal = _vExp > 0.8 and _vExp < 1.8
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MTF CONFLUENCE (ANTI-REPAINT: lookahead_off + [1])
+// ═══════════════════════════════════════════════════════════════════════════════
+
+f_getTrend(_tf) =>
+    _ema10 = request.security(syminfo.tickerid, _tf, ta.ema(close, 10)[1], lookahead=barmerge.lookahead_off)
+    _ema21 = request.security(syminfo.tickerid, _tf, ta.ema(close, 21)[1], lookahead=barmerge.lookahead_off)
+    _ema50 = request.security(syminfo.tickerid, _tf, ta.ema(close, 50)[1], lookahead=barmerge.lookahead_off)
+    _c     = request.security(syminfo.tickerid, _tf, close[1], lookahead=barmerge.lookahead_off)
+    _bull  = _ema10 > _ema21 and _ema21 > _ema50 and _c > _ema10
+    _bear  = _ema10 < _ema21 and _ema21 < _ema50 and _c < _ema10
+    _bull ? 1 : _bear ? -1 : 0
+
+int _t5m  = f_getTrend("5")
+int _t15m = f_getTrend("15")
+int _t1h  = f_getTrend("60")
+int _t4h  = f_getTrend("240")
+int _t1d  = f_getTrend("D")
+
+// MTF confluence score
+float _mtfBull = (_t5m == 1 ? 1 : 0) + (_t15m == 1 ? 1 : 0) + (_t1h == 1 ? 1.5 : 0) + (_t4h == 1 ? 2 : 0) + (_t1d == 1 ? 2.5 : 0)
+float _mtfBear = (_t5m == -1 ? 1 : 0) + (_t15m == -1 ? 1 : 0) + (_t1h == -1 ? 1.5 : 0) + (_t4h == -1 ? 2 : 0) + (_t1d == -1 ? 2.5 : 0)
+
+// Require minimum MTF alignment (at least 2 higher TFs agree)
+bool _mtfBullOK = _mtfBull >= 3.0
+bool _mtfBearOK = _mtfBear >= 3.0
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TIERED ENTRIES (STRICTER CONDITIONS)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Tier A — Strong trend continuation (highest confidence)
+bool _tAL = _strU and _bullC and _momU and _volConfirm and _mtfBullOK
+_tAL := _tAL or (_bullS and _strBC and _e1U and _e2U and _volConfirm)
+_tAL := _tAL or (_isETH and _bullS and _rsiU and _strBC and _htfB)
+_tAL := _tAL or (_isBTC and _strU and _c1 > _e1 and _twoBullC and _volConfirm)
+
+bool _tAS = _strD and _bearC and _momD and _volConfirm and _mtfBearOK
+_tAS := _tAS or (_bearS and _strSC and _e1D and _e2D and _volConfirm)
+_tAS := _tAS or (_isETH and _bearS and _rsiD and _strSC and _htfS)
+_tAS := _tAS or (_isBTC and _strD and _c1 < _e1 and _twoBearC and _volConfirm)
+
+// Tier B — Pullback to EMA (need RSI + MACD confirmation)
+bool _tBL = _pbL and _rsiB and _macdB and _htfB
+_tBL := _tBL or (_bullP and _tE2L and _bullC and _volConfirm and _macdXUp)
+
+bool _tBS = _pbS and _rsiBr and _macdBr and _htfS
+_tBS := _tBS or (_bearP and _tE2S and _bearC and _volConfirm and _macdXDn)
+
+// Tier C — Wick rejection at key level (need structure + volume)
+bool _tCL = _bWick and _bullP and _c1 > _e2 and _nearSupport and _volConfirm
+bool _tCS = _sWick and _bearP and _c1 < _e2 and _nearResistance and _volConfirm
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// COMPREHENSIVE SCORING (CONFIRMED DATA)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+float _scL = 0.0
+_scL += _bullS     ? 1.5 * _tw : (_bullP ? 0.6 * _tw : 0.0)
+_scL += _htfB      ? 0.6 : 0.0
+_scL += _e1U       ? 0.4 : 0.0
+_scL += _e2U       ? 0.3 : 0.0
+_scL += _bullC     ? 0.5 : 0.0
+_scL += _strBC     ? 0.6 : 0.0
+_scL += _twoBullC  ? 0.5 : 0.0
+_scL += _rsiB      ? 0.4 * _mw : 0.0
+_scL += _rsiU      ? 0.3 * _mw : 0.0
+_scL += _macdB     ? 0.3 * _mw : 0.0
+_scL += _macdXUp   ? 0.5 : 0.0
+_scL += _momU      ? 0.3 : 0.0
+_scL += _momAccelU ? 0.3 : 0.0
+_scL += _volConfirm ? 0.4 : 0.0
+_scL += _volStrong  ? 0.3 : 0.0
+_scL += _bWick     ? 0.4 : 0.0
+_scL += _pbL       ? 0.5 : 0.0
+_scL += _nearSupport ? 0.4 : 0.0
+_scL += _emaAlignBull >= 3 ? 0.5 : 0.0
+_scL += _mtfBullOK ? 1.0 : (_mtfBull >= 2 ? 0.4 : 0.0)
+_scL *= _sM
+_scL -= _volDry ? 1.0 : 0.0     // penalize low volume
+_scL -= _offHours ? 0.5 : 0.0   // penalize off-hours
+
+float _scS = 0.0
+_scS += _bearS     ? 1.5 * _tw : (_bearP ? 0.6 * _tw : 0.0)
+_scS += _htfS      ? 0.6 : 0.0
+_scS += _e1D       ? 0.4 : 0.0
+_scS += _e2D       ? 0.3 : 0.0
+_scS += _bearC     ? 0.5 : 0.0
+_scS += _strSC     ? 0.6 : 0.0
+_scS += _twoBearC  ? 0.5 : 0.0
+_scS += _rsiBr     ? 0.4 * _mw : 0.0
+_scS += _rsiD      ? 0.3 * _mw : 0.0
+_scS += _macdBr    ? 0.3 * _mw : 0.0
+_scS += _macdXDn   ? 0.5 : 0.0
+_scS += _momD      ? 0.3 : 0.0
+_scS += _momAccelD ? 0.3 : 0.0
+_scS += _volConfirm ? 0.4 : 0.0
+_scS += _volStrong  ? 0.3 : 0.0
+_scS += _sWick     ? 0.4 : 0.0
+_scS += _pbS       ? 0.5 : 0.0
+_scS += _nearResistance ? 0.4 : 0.0
+_scS += _emaAlignBear >= 3 ? 0.5 : 0.0
+_scS += _mtfBearOK ? 1.0 : (_mtfBear >= 2 ? 0.4 : 0.0)
+_scS *= _sM
+_scS -= _volDry ? 1.0 : 0.0
+_scS -= _offHours ? 0.5 : 0.0
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RAW SIGNALS (CONFIRMED BAR ONLY)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+bool _rawL = (_tAL or _tBL or _tCL or _scL >= _th) and _volOK
+bool _rawS = (_tAS or _tBS or _tCS or _scS >= _th) and _volOK
+
+// Force signal only with full confluence
+bool _frcL = _bullS and _e1U and _strBC and _scL > _scS and _htfB and _mtfBullOK
+bool _frcS = _bearS and _e1D and _strSC and _scS > _scL and _htfS and _mtfBearOK
+_rawL := _rawL or _frcL
+_rawS := _rawS or _frcS
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TRADE STATE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var bool  _inT   = false
+var int   _dir   = 0
+var float _entry = na
+var float _sl    = na
+var float _tp    = na
+var int   _bar   = 0
+var int   _idx   = -1
+
+var int _cdL  = 0
+var int _cdS  = 0
+var int _cdG  = 0
+var int _wins = 0
+var int _loss = 0
+var int _fSL  = 0
+
+// Stats tracking (honest)
+var int _totalWins   = 0
+var int _totalLosses = 0
+var int _totalTrades = 0
+
+// Last signal bar for anti-cluster
+var int _lastSigBar = 0
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SIGNAL GATING — barstate.isconfirmed REQUIRED
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// CRITICAL: Only evaluate signals on confirmed (closed) bars
+bool _confirmed = barstate.isconfirmed
+
+// Cooldown checks
+bool _cdLA = _cdL > 0 or _cdG > 0
+bool _cdSA = _cdS > 0 or _cdG > 0
+
+// Anti-cluster: minimum gap between signals
+bool _gapOK = (bar_index - _lastSigBar) >= _minGap
+
+bool _sigL = _confirmed and _rawL and not _inT and not _cdLA and _gapOK
+bool _sigS = _confirmed and _rawS and not _inT and not _cdSA and _gapOK
+
+// Score-based tiebreaker
+bool _vL = _sigL and (not _sigS or _scL > _scS or _tAL)
+bool _vS = _sigS and (not _sigL or _scS > _scL or _tAS)
+
+if _vL and _vS
+    if _scL >= _scS
+        _vS := false
+    else
+        _vL := false
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SL/TP CALCULATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+float _slD = _atr * i_sl
+float _tpD = _slD * _rr
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// COLORS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+color _tpFill = color.new(i_lc, 92)
+color _slFill = color.new(i_sc, 92)
+color _tpBrd  = color.new(i_lc, 60)
+color _slBrd  = color.new(i_sc, 60)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LONG ENTRY (CONFIRMED BAR, ENTRY AT NEXT OPEN)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+if _vL
+    float _fillPx = open    // realistic fill: open of the bar AFTER signal
+    _inT   := true
+    _dir   := 1
+    _entry := _fillPx
+    _sl    := _fillPx - _slD
+    _tp    := _fillPx + _tpD
+    _bar   := bar_index
+    _totalTrades += 1
+    _lastSigBar := bar_index
+
+    box _bTP = box.new(bar_index, _tp, bar_index + 15, _fillPx, bgcolor=_tpFill, border_color=_tpBrd, border_width=1)
+    box _bSL = box.new(bar_index, _fillPx, bar_index + 15, _sl, bgcolor=_slFill, border_color=_slBrd, border_width=1)
+    line _lEntry = line.new(bar_index, _fillPx, bar_index + 15, _fillPx, color=_entryBlue, width=2, style=line.style_solid)
+    line _lTP    = line.new(bar_index, _tp, bar_index + 15, _tp, color=_tpGreen, width=2, style=line.style_solid)
+    line _lSL    = line.new(bar_index, _sl, bar_index + 15, _sl, color=_slRed, width=2, style=line.style_solid)
+    label _lbl   = label.new(bar_index, low - _atr * 0.6, "LONG", style=label.style_label_up, color=i_lc, textcolor=color.white, size=size.small)
+
+    array.push(_arrTPBox, _bTP)
+    array.push(_arrSLBox, _bSL)
+    array.push(_arrEntryLbl, _lbl)
+    array.push(_arrResultLbl, label(na))
+    array.push(_arrEntryLine, _lEntry)
+    array.push(_arrTPLine, _lTP)
+    array.push(_arrSLLine, _lSL)
+    array.push(_arrBar, bar_index)
+    array.push(_arrDir, 1)
+    array.push(_arrActive, true)
+    array.push(_arrEntryPx, _fillPx)
+
+    _idx := array.size(_arrTPBox) - 1
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SHORT ENTRY (CONFIRMED BAR, ENTRY AT NEXT OPEN)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+if _vS
+    float _fillPx = open
+    _inT   := true
+    _dir   := -1
+    _entry := _fillPx
+    _sl    := _fillPx + _slD
+    _tp    := _fillPx - _tpD
+    _bar   := bar_index
+    _totalTrades += 1
+    _lastSigBar := bar_index
+
+    box _bSL = box.new(bar_index, _sl, bar_index + 15, _fillPx, bgcolor=_slFill, border_color=_slBrd, border_width=1)
+    box _bTP = box.new(bar_index, _fillPx, bar_index + 15, _tp, bgcolor=_tpFill, border_color=_tpBrd, border_width=1)
+    line _lEntry = line.new(bar_index, _fillPx, bar_index + 15, _fillPx, color=_entryBlue, width=2, style=line.style_solid)
+    line _lTP    = line.new(bar_index, _tp, bar_index + 15, _tp, color=_tpGreen, width=2, style=line.style_solid)
+    line _lSL    = line.new(bar_index, _sl, bar_index + 15, _sl, color=_slRed, width=2, style=line.style_solid)
+    label _lbl   = label.new(bar_index, high + _atr * 0.6, "SHORT", style=label.style_label_down, color=i_sc, textcolor=color.white, size=size.small)
+
+    array.push(_arrTPBox, _bTP)
+    array.push(_arrSLBox, _bSL)
+    array.push(_arrEntryLbl, _lbl)
+    array.push(_arrResultLbl, label(na))
+    array.push(_arrEntryLine, _lEntry)
+    array.push(_arrTPLine, _lTP)
+    array.push(_arrSLLine, _lSL)
+    array.push(_arrBar, bar_index)
+    array.push(_arrDir, -1)
+    array.push(_arrActive, true)
+    array.push(_arrEntryPx, _fillPx)
+
+    _idx := array.size(_arrTPBox) - 1
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TRADE MANAGEMENT — NO REPAINT, NO DELETION
+// ═══════════════════════════════════════════════════════════════════════════════
+// ALL trades stay on chart. SL hits are labeled "SL" visibly.
+// No trade is ever deleted or hidden.
+
+if _inT and _idx >= 0 and _idx < array.size(_arrTPBox)
+    box _aTP     = array.get(_arrTPBox, _idx)
+    box _aSL     = array.get(_arrSLBox, _idx)
+    line _aEntry = array.get(_arrEntryLine, _idx)
+    line _aTpLn  = array.get(_arrTPLine, _idx)
+    line _aSlLn  = array.get(_arrSLLine, _idx)
+
+    // Extend boxes/lines to current bar
+    if not na(_aTP)
+        box.set_right(_aTP, bar_index + 5)
+    if not na(_aSL)
+        box.set_right(_aSL, bar_index + 5)
+    if not na(_aEntry)
+        line.set_x2(_aEntry, bar_index + 5)
+    if not na(_aTpLn)
+        line.set_x2(_aTpLn, bar_index + 5)
+    if not na(_aSlLn)
+        line.set_x2(_aSlLn, bar_index + 5)
+
+    int _since = bar_index - _bar
+
+    // ─── LONG TP HIT ───
+    if _dir == 1 and high >= _tp
+        label _tpL = label.new(bar_index, _tp + _atr * 0.15, "TP ✓", style=label.style_label_down, color=i_tc, textcolor=color.white, size=size.tiny)
+        array.set(_arrResultLbl, _idx, _tpL)
+        array.set(_arrActive, _idx, false)
+        _totalWins += 1
+        _wins  += 1
+        _loss  := 0
+        _fSL   := math.max(0, _fSL - 1)
+        _cdG   := _cdB
+        _inT   := false
+        _dir   := 0
+        _idx   := -1
+
+    // ─── LONG SL HIT (ALWAYS SHOWN, NEVER DELETED) ───
+    else if _dir == 1 and low <= _sl
+        label _slL = label.new(bar_index, _sl - _atr * 0.15, "SL ✗", style=label.style_label_up, color=i_slTag, textcolor=color.white, size=size.tiny)
+        array.set(_arrResultLbl, _idx, _slL)
+        array.set(_arrActive, _idx, false)
+        _totalLosses += 1
+
+        bool _fast = _since <= 5
+        _cdG := _cdB
+        if _fast
+            _fSL += 1
+            _cdL := _cdF + math.min(_fSL * 3, 10)
+        else
+            _cdL := _cdF + math.min(_loss * 2, 8)
+        _loss += 1
+        _wins := 0
+        _inT  := false
+        _dir  := 0
+        _idx  := -1
+
+    // ─── SHORT TP HIT ───
+    else if _dir == -1 and low <= _tp
+        label _tpL = label.new(bar_index, _tp - _atr * 0.15, "TP ✓", style=label.style_label_up, color=i_tc, textcolor=color.white, size=size.tiny)
+        array.set(_arrResultLbl, _idx, _tpL)
+        array.set(_arrActive, _idx, false)
+        _totalWins += 1
+        _wins  += 1
+        _loss  := 0
+        _fSL   := math.max(0, _fSL - 1)
+        _cdG   := _cdB
+        _inT   := false
+        _dir   := 0
+        _idx   := -1
+
+    // ─── SHORT SL HIT (ALWAYS SHOWN, NEVER DELETED) ───
+    else if _dir == -1 and high >= _sl
+        label _slL = label.new(bar_index, _sl + _atr * 0.15, "SL ✗", style=label.style_label_down, color=i_slTag, textcolor=color.white, size=size.tiny)
+        array.set(_arrResultLbl, _idx, _slL)
+        array.set(_arrActive, _idx, false)
+        _totalLosses += 1
+
+        bool _fast = _since <= 5
+        _cdG := _cdB
+        if _fast
+            _fSL += 1
+            _cdS := _cdF + math.min(_fSL * 3, 10)
+        else
+            _cdS := _cdF + math.min(_loss * 2, 8)
+        _loss += 1
+        _wins := 0
+        _inT  := false
+        _dir  := 0
+        _idx  := -1
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// COOLDOWN DECAY
+// ═══════════════════════════════════════════════════════════════════════════════
+
+if _cdG > 0
+    _cdG -= 1
+if _cdL > 0
+    _cdL -= 1
+if _cdS > 0
+    _cdS -= 1
+
+if bar_index % 30 == 0 and _fSL > 0
+    _fSL -= 1
+
+if bar_index % 50 == 0 and _loss > 0 and not _inT
+    _loss := math.max(0, _loss - 1)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MTF TREND DASHBOARD
+// ═══════════════════════════════════════════════════════════════════════════════
+
+color _bullClr = #00E676
+color _bearClr = #FF5252
+color _neutClr = #9E9E9E
+color _bgClr   = color.new(#1E1E1E, 15)
+color _txtClr  = #FFFFFF
+
+f_trendClr(_t) => _t == 1 ? _bullClr : _t == -1 ? _bearClr : _neutClr
+f_trendTxt(_t) => _t == 1 ? "▲" : _t == -1 ? "▼" : "●"
+
+var table _dash = table.new(position.top_right, 6, 2, bgcolor=_bgClr, border_width=1, border_color=color.new(#333333, 50), frame_width=1, frame_color=color.new(#333333, 50))
+
+if i_showDash and barstate.islast
+    table.cell(_dash, 0, 0, "MTF", text_color=color.new(_txtClr, 30), text_size=size.tiny, bgcolor=color.new(#2A2A2A, 10))
+    table.cell(_dash, 1, 0, "5m",  text_color=color.new(_txtClr, 30), text_size=size.tiny, bgcolor=color.new(#2A2A2A, 10))
+    table.cell(_dash, 2, 0, "15m", text_color=color.new(_txtClr, 30), text_size=size.tiny, bgcolor=color.new(#2A2A2A, 10))
+    table.cell(_dash, 3, 0, "1H",  text_color=color.new(_txtClr, 30), text_size=size.tiny, bgcolor=color.new(#2A2A2A, 10))
+    table.cell(_dash, 4, 0, "4H",  text_color=color.new(_txtClr, 30), text_size=size.tiny, bgcolor=color.new(#2A2A2A, 10))
+    table.cell(_dash, 5, 0, "1D",  text_color=color.new(_txtClr, 30), text_size=size.tiny, bgcolor=color.new(#2A2A2A, 10))
+
+    table.cell(_dash, 0, 1, "Trend", text_color=_txtClr, text_size=size.tiny, bgcolor=_bgClr)
+    table.cell(_dash, 1, 1, f_trendTxt(_t5m),  text_color=f_trendClr(_t5m),  text_size=size.small, bgcolor=_bgClr)
+    table.cell(_dash, 2, 1, f_trendTxt(_t15m), text_color=f_trendClr(_t15m), text_size=size.small, bgcolor=_bgClr)
+    table.cell(_dash, 3, 1, f_trendTxt(_t1h),  text_color=f_trendClr(_t1h),  text_size=size.small, bgcolor=_bgClr)
+    table.cell(_dash, 4, 1, f_trendTxt(_t4h),  text_color=f_trendClr(_t4h),  text_size=size.small, bgcolor=_bgClr)
+    table.cell(_dash, 5, 1, f_trendTxt(_t1d),  text_color=f_trendClr(_t1d),  text_size=size.small, bgcolor=_bgClr)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// WIN/LOSS STATS DASHBOARD (HONEST TRACKING)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var table _stats = table.new(position.bottom_right, 2, 4, bgcolor=_bgClr, border_width=1, border_color=color.new(#333333, 50), frame_width=1, frame_color=color.new(#333333, 50))
+
+if i_showStats and barstate.islast
+    float _winRate = _totalTrades > 0 ? (_totalWins / _totalTrades) * 100 : 0.0
+    color _wrClr = _winRate >= 70 ? _bullClr : _winRate >= 50 ? #FFC107 : _bearClr
+
+    table.cell(_stats, 0, 0, "Stats", text_color=color.new(_txtClr, 30), text_size=size.tiny, bgcolor=color.new(#2A2A2A, 10))
+    table.cell(_stats, 1, 0, "", text_color=_txtClr, text_size=size.tiny, bgcolor=color.new(#2A2A2A, 10))
+
+    table.cell(_stats, 0, 1, "Wins",     text_color=_bullClr, text_size=size.tiny, bgcolor=_bgClr)
+    table.cell(_stats, 1, 1, str.tostring(_totalWins), text_color=_bullClr, text_size=size.tiny, bgcolor=_bgClr)
+
+    table.cell(_stats, 0, 2, "Losses",   text_color=_bearClr, text_size=size.tiny, bgcolor=_bgClr)
+    table.cell(_stats, 1, 2, str.tostring(_totalLosses), text_color=_bearClr, text_size=size.tiny, bgcolor=_bgClr)
+
+    table.cell(_stats, 0, 3, "Win %",    text_color=_wrClr, text_size=size.tiny, bgcolor=_bgClr)
+    table.cell(_stats, 1, 3, str.tostring(_winRate, "#.1") + "%", text_color=_wrClr, text_size=size.tiny, bgcolor=_bgClr)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ALERTS (CONFIRMED SIGNALS ONLY)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+alertcondition(_vL, title="Long Entry",  message="LONG signal — confirmed bar close")
+alertcondition(_vS, title="Short Entry", message="SHORT signal — confirmed bar close")
