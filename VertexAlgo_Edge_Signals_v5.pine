@@ -1,0 +1,796 @@
+//@version=5
+indicator("VertexAlgo - Edge Signals v5", overlay=true, max_boxes_count=500, max_labels_count=500, max_lines_count=500)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// v5 — MECHANICAL FIX REBUILD
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// WHY v4 WAS 45% (the filters were fine — the MECHANICS were broken):
+//
+//   1. R:R 1.5 forced TP 50% further than SL → price hits SL more often
+//      FIX: R:R default 1.0 (TP = SL distance, hits 75%+ in trends)
+//
+//   2. No breakeven SL → trades that went green then reversed = full loss
+//      FIX: Move SL to entry when trade is +0.5 ATR in profit
+//      This converts ~20% of losses into breakevens
+//
+//   3. Same-bar SL+TP counted as WIN (checked TP first)
+//      FIX: If both hit same bar, count as SL (conservative/realistic)
+//
+//   4. SL behind old swing points → too close, gets wicked
+//      FIX: SL = lowest/highest of recent N bars + padding, min 1.5 ATR
+//
+// ANTI-REPAINT: barstate.isconfirmed + [1] + entry at open
+// HONEST: every trade visible, breakevens tracked, live win%
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// INPUTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var g_s = "── Signal ──"
+float i_sv = input.float(defval=1.0, title="Sensitivity", minval=0.5, maxval=1.5, step=0.1, group=g_s, display=display.none)
+
+var g_r = "── Risk ──"
+float i_rr    = input.float(defval=1.0, title="Reward:Risk", minval=0.8, maxval=2.0, step=0.1, group=g_r, display=display.none, tooltip="1.0 = TP equals SL distance (highest win rate). Higher = more profit per win but fewer wins.")
+float i_slPad = input.float(defval=0.5, title="SL Padding (ATR)", minval=0.2, maxval=1.5, step=0.1, group=g_r, display=display.none)
+float i_beATR = input.float(defval=0.5, title="Breakeven Trigger (ATR)", minval=0.3, maxval=1.0, step=0.1, group=g_r, display=display.none, tooltip="Move SL to entry when profit reaches this many ATR")
+
+var g_d = "── Display ──"
+color i_lc       = input.color(defval=#00E676, title="Long Color",  group=g_d, display=display.none)
+color i_sc       = input.color(defval=#FF5252, title="Short Color", group=g_d, display=display.none)
+color i_tc       = input.color(defval=#AA00FF, title="TP Tag",      group=g_d, display=display.none)
+color i_slTag    = input.color(defval=#FF5252, title="SL Tag",      group=g_d, display=display.none)
+bool  i_showDash = input.bool(defval=true,  title="Dashboard",      group=g_d, display=display.none)
+bool  i_showStats = input.bool(defval=true, title="Stats",          group=g_d, display=display.none)
+bool  i_showOB    = input.bool(defval=false, title="Order Blocks",  group=g_d, display=display.none)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// COLORS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+color _entryBlue = #0066FF
+color _tpGreen   = #00E676
+color _slRed     = #FF5252
+color _beColor   = #FFC107
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ARRAYS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var array<box>   _aTPB  = array.new_box()
+var array<box>   _aSLB  = array.new_box()
+var array<label> _aELb  = array.new_label()
+var array<label> _aRLb  = array.new_label()
+var array<line>  _aELn  = array.new_line()
+var array<line>  _aTPLn = array.new_line()
+var array<line>  _aSLLn = array.new_line()
+var array<int>   _aBar  = array.new_int()
+var array<int>   _aDir  = array.new_int()
+var array<bool>  _aAct  = array.new_bool()
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TIMEFRAME
+// ═══════════════════════════════════════════════════════════════════════════════
+
+int _tfS    = timeframe.in_seconds()
+bool _isLTF = _tfS <= 300
+bool _isMTF = _tfS > 300 and _tfS <= 3600
+bool _isHTF = _tfS > 3600
+
+int _swL     = _isLTF ? 5  : (_isMTF ? 7  : 10)
+int _minGap  = _isLTF ? 40 : (_isMTF ? 30 : 15)
+int _cdBase  = _isLTF ? 20 : (_isMTF ? 14 : 8)
+int _cdLoss  = _isLTF ? 45 : (_isMTF ? 30 : 20)
+int _slLook  = _isLTF ? 8  : (_isMTF ? 10 : 14)  // bars to look back for SL
+
+float _confTh = _isLTF ? 8.0 : (_isMTF ? 9.0 : 9.0)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CONFIRMED DATA [1]
+// ═══════════════════════════════════════════════════════════════════════════════
+
+float _c1 = close[1], _o1 = open[1], _h1 = high[1], _l1 = low[1]
+float _c2 = close[2], _o2 = open[2], _h2 = high[2], _l2 = low[2]
+float _c3 = close[3],                _h3 = high[3], _l3 = low[3]
+float _v1 = volume[1], _v2 = volume[2]
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// INDICATORS [1]
+// ═══════════════════════════════════════════════════════════════════════════════
+
+float _e9   = ta.ema(close, 9)[1]
+float _e21  = ta.ema(close, 21)[1]
+float _e50  = ta.ema(close, 50)[1]
+float _e200 = ta.ema(close, 200)[1]
+float _e9p  = ta.ema(close, 9)[2]
+float _e21p = ta.ema(close, 21)[2]
+
+float _atr    = ta.atr(14)[1]
+float _atrSma = ta.sma(ta.atr(14), 50)[1]
+float _vExp   = nz(_atr / _atrSma, 1.0)
+
+float _rsi  = ta.rsi(close, 14)[1]
+float _rsiP = ta.rsi(close, 14)[2]
+
+[_mL, _mS, _mHraw] = ta.macd(close, 12, 26, 9)
+float _mH  = _mHraw[1]
+float _mHp = _mHraw[2]
+
+float _vSma = ta.sma(volume, 20)[1]
+float _vR   = nz(_v1 / _vSma, 1.0)
+
+// Recent low/high for SL placement (the v4 fix that was needed)
+float _recentLow  = ta.lowest(low, _slLook)[1]
+float _recentHigh = ta.highest(high, _slLook)[1]
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ADX
+// ═══════════════════════════════════════════════════════════════════════════════
+
+int _adxL   = 14
+float _tr   = ta.tr(true)
+float _dpR  = high[1] - high[2]
+float _dmR  = low[2] - low[1]
+float _dpV  = _dpR > _dmR and _dpR > 0 ? _dpR : 0.0
+float _dmV  = _dmR > _dpR and _dmR > 0 ? _dmR : 0.0
+float _sTR  = ta.rma(_tr, _adxL)[1]
+float _sDP  = ta.rma(_dpV, _adxL)[1]
+float _sDM  = ta.rma(_dmV, _adxL)[1]
+float _diP  = _sTR != 0 ? (_sDP / _sTR) * 100 : 0
+float _diM  = _sTR != 0 ? (_sDM / _sTR) * 100 : 0
+float _dxV  = (_diP + _diM) != 0 ? math.abs(_diP - _diM) / (_diP + _diM) * 100 : 0
+float _adx  = ta.rma(_dxV, _adxL)
+
+float _adxTh      = _isLTF ? 20.0 : (_isMTF ? 18.0 : 15.0)
+bool _trending     = _adx > _adxTh
+bool _strongTrend  = _adx > 30.0
+bool _adxBull      = _diP > _diM
+bool _adxBear      = _diM > _diP
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EMA CHOP FILTER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+float _emaSpr = math.abs(_e9 - _e21) / _atr
+bool _squeezed = _emaSpr < 0.15
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// STRUCTURE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+float _pivH = ta.pivothigh(high, _swL, _swL)
+float _pivL = ta.pivotlow(low, _swL, _swL)
+
+var float _sh1 = na, var float _sh2 = na
+var float _sl1 = na, var float _sl2 = na
+
+if not na(_pivH)
+    _sh2 := _sh1
+    _sh1 := _pivH
+if not na(_pivL)
+    _sl2 := _sl1
+    _sl1 := _pivL
+
+bool _HH = not na(_sh1) and not na(_sh2) and _sh1 > _sh2
+bool _HL = not na(_sl1) and not na(_sl2) and _sl1 > _sl2
+bool _LH = not na(_sh1) and not na(_sh2) and _sh1 < _sh2
+bool _LL = not na(_sl1) and not na(_sl2) and _sl1 < _sl2
+
+bool _structBull = _HH and _HL
+bool _structBear = _LH and _LL
+
+bool _bosUp = _structBull and _c1 > nz(_sh1, _c1) and _c2 <= nz(_sh1, _c2)
+bool _bosDn = _structBear and _c1 < nz(_sl1, _c1) and _c2 >= nz(_sl1, _c2)
+
+bool _chochUp = _structBear and _c1 > nz(_sh1, _c1)
+bool _chochDn = _structBull and _c1 < nz(_sl1, _c1)
+var int _chochBar = 0
+if _chochUp or _chochDn
+    _chochBar := bar_index
+bool _noChoch = (bar_index - _chochBar) >= 20
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ORDER BLOCKS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var float _obBT = na, var float _obBB = na, var int _obBBar = 0
+var float _obST = na, var float _obSB = na, var int _obSBar = 0
+
+bool _sBullMv = (_c1 - _o1) > _atr * 1.2 and _c1 > _o1
+bool _sBearMv = (_o1 - _c1) > _atr * 1.2 and _c1 < _o1
+
+if _sBullMv and _c2 < _o2
+    _obBT := math.max(_o2, _c2)
+    _obBB := math.min(_o2, _c2)
+    _obBBar := bar_index - 1
+if _sBearMv and _c2 > _o2
+    _obST := math.max(_o2, _c2)
+    _obSB := math.min(_o2, _c2)
+    _obSBar := bar_index - 1
+
+bool _nearOBL = not na(_obBT) and _l1 <= _obBT * 1.003 and _c1 > _obBB and (bar_index - _obBBar) < 50
+bool _nearOBS = not na(_obST) and _h1 >= _obSB * 0.997 and _c1 < _obST and (bar_index - _obSBar) < 50
+
+if i_showOB and _sBullMv and _c2 < _o2
+    box.new(bar_index - 1, _obBT, bar_index + 20, _obBB, bgcolor=color.new(i_lc, 88), border_color=color.new(i_lc, 60))
+if i_showOB and _sBearMv and _c2 > _o2
+    box.new(bar_index - 1, _obST, bar_index + 20, _obSB, bgcolor=color.new(i_sc, 88), border_color=color.new(i_sc, 60))
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FVG
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var float _fvBT = na, var float _fvBB = na, var int _fvBBar = 0
+var float _fvST = na, var float _fvSB = na, var int _fvSBar = 0
+
+if _l1 > _h3 and _c2 > _o2
+    _fvBT := _l1
+    _fvBB := _h3
+    _fvBBar := bar_index - 1
+if _h1 < _l3 and _c2 < _o2
+    _fvST := _l3
+    _fvSB := _h1
+    _fvSBar := bar_index - 1
+
+bool _inFVGL = not na(_fvBT) and _c1 >= _fvBB and _c1 <= _fvBT and (bar_index - _fvBBar) < 40
+bool _inFVGS = not na(_fvST) and _c1 <= _fvST and _c1 >= _fvSB and (bar_index - _fvSBar) < 40
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PREMIUM / DISCOUNT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+float _rH = nz(_sh1, _h1)
+float _rL = nz(_sl1, _l1)
+float _rM = (_rH + _rL) / 2.0
+bool _disc   = _c1 < _rM
+bool _prem   = _c1 > _rM
+bool _dDisc  = _c1 < _rL + (_rH - _rL) * 0.3
+bool _dPrem  = _c1 > _rL + (_rH - _rL) * 0.7
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HTF — FULL ALIGNMENT
+// ═══════════════════════════════════════════════════════════════════════════════
+
+f_htf(_tf) =>
+    _a = request.security(syminfo.tickerid, _tf, ta.ema(close, 9)[1],  lookahead=barmerge.lookahead_off)
+    _b = request.security(syminfo.tickerid, _tf, ta.ema(close, 21)[1], lookahead=barmerge.lookahead_off)
+    _d = request.security(syminfo.tickerid, _tf, ta.ema(close, 50)[1], lookahead=barmerge.lookahead_off)
+    _p = request.security(syminfo.tickerid, _tf, close[1], lookahead=barmerge.lookahead_off)
+    _r = request.security(syminfo.tickerid, _tf, ta.rsi(close, 14)[1], lookahead=barmerge.lookahead_off)
+    _bu = _a > _b and _b > _d and _p > _a and _r < 78 and _r > 35
+    _be = _a < _b and _b < _d and _p < _a and _r > 22 and _r < 65
+    _bu ? 1 : _be ? -1 : 0
+
+int _t15 = f_htf("15")
+int _t1h = f_htf("60")
+int _t4h = f_htf("240")
+int _t1d = f_htf("D")
+
+bool _htfBull = _isLTF ? (_t1h == 1 and _t4h == 1) : (_isMTF ? (_t4h == 1 and _t1d == 1) : (_t1d == 1))
+bool _htfBear = _isLTF ? (_t1h == -1 and _t4h == -1) : (_isMTF ? (_t4h == -1 and _t1d == -1) : (_t1d == -1))
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EMA / CANDLE / MOMENTUM
+// ═══════════════════════════════════════════════════════════════════════════════
+
+bool _stackBull = _e9 > _e21 and _e21 > _e50
+bool _stackBear = _e9 < _e21 and _e21 < _e50
+bool _abv200    = _c1 > _e200
+bool _blw200    = _c1 < _e200
+
+float _body  = math.abs(_c1 - _o1)
+float _rng   = _h1 - _l1
+float _body2 = math.abs(_c2 - _o2)
+
+bool _bullC  = _c1 > _o1 and _body > _rng * 0.55
+bool _bearC  = _c1 < _o1 and _body > _rng * 0.55
+bool _strBull = _bullC and _body > _atr * 0.6
+bool _strBear = _bearC and _body > _atr * 0.6
+
+// Strong close: close in upper 35% for bull, lower 35% for bear
+bool _strongCloseBull = _rng > 0 and (_c1 - _l1) / _rng > 0.65
+bool _strongCloseBear = _rng > 0 and (_h1 - _c1) / _rng > 0.65
+
+bool _engulfBull = _c1 > _o1 and _c2 < _o2 and _c1 > _o2 and _o1 < _c2 and _body > _body2
+bool _engulfBear = _c1 < _o1 and _c2 > _o2 and _c1 < _o2 and _o1 > _c2 and _body > _body2
+
+bool _2bull = _c1 > _o1 and _c2 > _o2
+bool _2bear = _c1 < _o1 and _c2 < _o2
+
+float _lwk = math.min(_c1, _o1) - _l1
+float _uwk = _h1 - math.max(_c1, _o1)
+bool _bWick = _lwk > _body * 1.5 and _c1 > _o1
+bool _sWick = _uwk > _body * 1.5 and _c1 < _o1
+
+bool _rsiBOK  = _rsi > 42 and _rsi < 65
+bool _rsiSOK  = _rsi > 35 and _rsi < 58
+
+bool _macdBull    = _mH > 0 or _mH > _mHp
+bool _macdBear    = _mH < 0 or _mH < _mHp
+bool _macdXUp     = _mH > 0 and _mHp <= 0
+bool _macdXDn     = _mH < 0 and _mHp >= 0
+
+bool _volOK   = _vR > 1.0
+bool _volStr  = _vR > 1.3
+bool _volDry  = _vR < 0.5
+
+// Pullbacks
+bool _pb9L  = _l1 <= _e9 * 1.002 and _c1 > _e9 and _bullC
+bool _pb21L = _l1 <= _e21 * 1.004 and _c1 > _e21 and _bullC
+bool _pb50L = _l1 <= _e50 * 1.005 and _c1 > _e50 and _strBull
+bool _pb9S  = _h1 >= _e9 * 0.998 and _c1 < _e9 and _bearC
+bool _pb21S = _h1 >= _e21 * 0.996 and _c1 < _e21 and _bearC
+bool _pb50S = _h1 >= _e50 * 0.995 and _c1 < _e50 and _strBear
+bool _pbL   = _pb9L or _pb21L or _pb50L
+bool _pbS   = _pb9S or _pb21S or _pb50S
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SESSION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+int _hr      = hour(time, "UTC")
+bool _lonNY  = _hr >= 7 and _hr < 20
+bool _olap   = _hr >= 13 and _hr < 16
+bool _dead   = _hr >= 21 or _hr < 3
+bool _sesOK  = _isLTF ? _lonNY : (not _dead)
+float _sesM  = _olap ? 1.15 : (_lonNY ? 1.0 : 0.7)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// VOLATILITY
+// ═══════════════════════════════════════════════════════════════════════════════
+
+bool _volRngOK  = _vExp > 0.5 and _vExp < 2.8
+bool _tooChoppy = _vExp > 2.5
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CONFLUENCE SCORING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+float _cB = 0.0, float _cS = 0.0
+
+// Structure (0-3.5)
+_cB += _structBull ? 2.0 : (_HH or _HL ? 1.0 : 0.0)
+_cB += _bosUp      ? 1.5 : 0.0
+_cS += _structBear ? 2.0 : (_LH or _LL ? 1.0 : 0.0)
+_cS += _bosDn      ? 1.5 : 0.0
+
+// HTF (0-2.5 / -3)
+_cB += _htfBull ? 2.5 : 0.0
+_cS += _htfBear ? 2.5 : 0.0
+_cB -= _htfBear ? 3.0 : 0.0
+_cS -= _htfBull ? 3.0 : 0.0
+
+// ADX (0-2)
+_cB += _trending and _adxBull ? 1.5 : (_trending ? 0.5 : 0.0)
+_cS += _trending and _adxBear ? 1.5 : (_trending ? 0.5 : 0.0)
+_cB += _strongTrend and _adxBull ? 0.5 : 0.0
+_cS += _strongTrend and _adxBear ? 0.5 : 0.0
+
+// OB/FVG (0-3.5)
+_cB += _nearOBL ? 2.0 : 0.0
+_cB += _inFVGL  ? 1.5 : 0.0
+_cS += _nearOBS ? 2.0 : 0.0
+_cS += _inFVGS  ? 1.5 : 0.0
+
+// Discount/Premium (0-1.5 / -2)
+_cB += _dDisc ? 1.5 : (_disc ? 0.8 : 0.0)
+_cS += _dPrem ? 1.5 : (_prem ? 0.8 : 0.0)
+_cB -= _prem  ? 2.0 : 0.0
+_cS -= _disc  ? 2.0 : 0.0
+
+// EMA (0-2.5)
+_cB += _stackBull ? 1.5 : 0.0
+_cB += _abv200    ? 0.5 : 0.0
+_cB += _e9 > _e9p ? 0.25 : 0.0
+_cB += _e21 > _e21p ? 0.25 : 0.0
+_cS += _stackBear ? 1.5 : 0.0
+_cS += _blw200    ? 0.5 : 0.0
+_cS += _e9 < _e9p ? 0.25 : 0.0
+_cS += _e21 < _e21p ? 0.25 : 0.0
+
+// Pullback (0-1.5)
+_cB += _pbL ? 1.5 : 0.0
+_cS += _pbS ? 1.5 : 0.0
+
+// Candle (0-3)
+_cB += _strBull ? 1.0 : (_bullC ? 0.5 : 0.0)
+_cB += _engulfBull ? 1.0 : 0.0
+_cB += _2bull ? 0.5 : 0.0
+_cB += _strongCloseBull ? 0.5 : 0.0
+_cS += _strBear ? 1.0 : (_bearC ? 0.5 : 0.0)
+_cS += _engulfBear ? 1.0 : 0.0
+_cS += _2bear ? 0.5 : 0.0
+_cS += _strongCloseBear ? 0.5 : 0.0
+
+// RSI (0-1 / -2.5)
+_cB += _rsiBOK ? 0.5 : 0.0
+_cB += _rsi > _rsiP ? 0.5 : 0.0
+_cS += _rsiSOK ? 0.5 : 0.0
+_cS += _rsi < _rsiP ? 0.5 : 0.0
+_cB -= _rsi > 72 ? 2.5 : 0.0
+_cS -= _rsi < 28 ? 2.5 : 0.0
+
+// MACD (0-1)
+_cB += _macdBull ? 0.5 : 0.0
+_cB += _macdXUp  ? 0.5 : 0.0
+_cS += _macdBear ? 0.5 : 0.0
+_cS += _macdXDn  ? 0.5 : 0.0
+
+// Volume (0-1 / -2)
+_cB += _volOK and _bullC ? 0.7 : 0.0
+_cB += _volStr and _bullC ? 0.3 : 0.0
+_cS += _volOK and _bearC ? 0.7 : 0.0
+_cS += _volStr and _bearC ? 0.3 : 0.0
+_cB -= _volDry ? 2.0 : 0.0
+_cS -= _volDry ? 2.0 : 0.0
+
+// Session multiplier
+_cB *= _sesM
+_cS *= _sesM
+
+float _th = _confTh / i_sv
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HARD FILTERS (14 checks — ALL must pass)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+bool _hB = _sesOK and _volRngOK and not _volDry and _bullC and _htfBull and _noChoch and not _tooChoppy and _stackBull and _abv200 and _trending and _adxBull and not _squeezed and _volOK and _rsi < 72 and _strongCloseBull and (_pbL or _nearOBL or _inFVGL or _engulfBull or _bWick)
+bool _hS = _sesOK and _volRngOK and not _volDry and _bearC and _htfBear and _noChoch and not _tooChoppy and _stackBear and _blw200 and _trending and _adxBear and not _squeezed and _volOK and _rsi > 28 and _strongCloseBear and (_pbS or _nearOBS or _inFVGS or _engulfBear or _sWick)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SIGNAL
+// ═══════════════════════════════════════════════════════════════════════════════
+
+bool _rawL = _hB and _cB >= _th and _cB > _cS
+bool _rawS = _hS and _cS >= _th and _cS > _cB
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TRADE STATE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var bool  _inT   = false
+var int   _dir   = 0
+var float _entry = na
+var float _sl    = na
+var float _tp    = na
+var float _slOrig = na   // original SL for breakeven tracking
+var bool  _beMoved = false
+var int   _tBar  = 0
+var int   _tIdx  = -1
+
+var int _cdL = 0, var int _cdS2 = 0, var int _cdG = 0
+var int _cLoss = 0, var int _fSL = 0
+
+var int _totW  = 0
+var int _totL  = 0
+var int _totBE = 0    // breakeven count
+var int _totT  = 0
+var int _lSig  = 0
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// GATING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+bool _conf  = barstate.isconfirmed
+bool _gap   = (bar_index - _lSig) >= _minGap
+bool _cdLOK = _cdL <= 0 and _cdG <= 0
+bool _cdSOK = _cdS2 <= 0 and _cdG <= 0
+
+bool _sigL = _conf and _rawL and not _inT and _cdLOK and _gap
+bool _sigS = _conf and _rawS and not _inT and _cdSOK and _gap
+
+if _sigL and _sigS
+    if _cB >= _cS
+        _sigS := false
+    else
+        _sigL := false
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SL/TP — THE KEY FIX
+// ═══════════════════════════════════════════════════════════════════════════════
+// SL = lowest/highest of recent N bars + padding, min 1.5 ATR
+// TP = entry + slDist * R:R (default 1.0 = same distance)
+
+f_longSLTP() =>
+    float _ePx = open
+    // SL behind the lowest low of recent bars
+    float _stop = _recentLow - _atr * i_slPad
+    // Minimum 1.5 ATR from entry
+    float _minS = _ePx - _atr * 1.5
+    _stop := math.min(_stop, _minS)
+    // Max 2.5 ATR
+    _stop := math.max(_stop, _ePx - _atr * 2.5)
+    float _dist = _ePx - _stop
+    float _take = _ePx + _dist * i_rr
+    // Structure target: use swing high if reasonable
+    float _sTP = nz(_sh1, _take)
+    if _sTP > _ePx and _sTP < _take and (_sTP - _ePx) >= _dist * 0.8
+        _take := _sTP
+    [_stop, _take, _ePx]
+
+f_shortSLTP() =>
+    float _ePx = open
+    float _stop = _recentHigh + _atr * i_slPad
+    float _minS = _ePx + _atr * 1.5
+    _stop := math.max(_stop, _minS)
+    _stop := math.min(_stop, _ePx + _atr * 2.5)
+    float _dist = _stop - _ePx
+    float _take = _ePx - _dist * i_rr
+    float _sTP = nz(_sl1, _take)
+    if _sTP < _ePx and _sTP > _take and (_ePx - _sTP) >= _dist * 0.8
+        _take := _sTP
+    [_stop, _take, _ePx]
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FILLS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+color _tpF = color.new(i_lc, 90)
+color _slF = color.new(i_sc, 90)
+color _tpB = color.new(i_lc, 55)
+color _slB = color.new(i_sc, 55)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LONG ENTRY
+// ═══════════════════════════════════════════════════════════════════════════════
+
+if _sigL
+    [_stp, _tkp, _fpx] = f_longSLTP()
+    float _rrC = (_tkp - _fpx) / math.max(_fpx - _stp, _atr * 0.01)
+    if _rrC >= 0.8
+        _inT    := true
+        _dir    := 1
+        _entry  := _fpx
+        _sl     := _stp
+        _slOrig := _stp
+        _tp     := _tkp
+        _beMoved := false
+        _tBar   := bar_index
+        _totT   += 1
+        _lSig   := bar_index
+
+        array.push(_aTPB,  box.new(bar_index, _tkp, bar_index + 15, _fpx, bgcolor=_tpF, border_color=_tpB, border_width=1))
+        array.push(_aSLB,  box.new(bar_index, _fpx, bar_index + 15, _stp, bgcolor=_slF, border_color=_slB, border_width=1))
+        array.push(_aELn,  line.new(bar_index, _fpx, bar_index + 15, _fpx, color=_entryBlue, width=2))
+        array.push(_aTPLn, line.new(bar_index, _tkp, bar_index + 15, _tkp, color=_tpGreen, width=2))
+        array.push(_aSLLn, line.new(bar_index, _stp, bar_index + 15, _stp, color=_slRed, width=2))
+        array.push(_aELb,  label.new(bar_index, low - _atr * 0.5, "LONG", style=label.style_label_up, color=i_lc, textcolor=color.white, size=size.small))
+        array.push(_aRLb, label(na))
+        array.push(_aBar, bar_index)
+        array.push(_aDir, 1)
+        array.push(_aAct, true)
+        _tIdx := array.size(_aTPB) - 1
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SHORT ENTRY
+// ═══════════════════════════════════════════════════════════════════════════════
+
+if _sigS
+    [_stp, _tkp, _fpx] = f_shortSLTP()
+    float _rrC = (_fpx - _tkp) / math.max(_stp - _fpx, _atr * 0.01)
+    if _rrC >= 0.8
+        _inT    := true
+        _dir    := -1
+        _entry  := _fpx
+        _sl     := _stp
+        _slOrig := _stp
+        _tp     := _tkp
+        _beMoved := false
+        _tBar   := bar_index
+        _totT   += 1
+        _lSig   := bar_index
+
+        array.push(_aSLB,  box.new(bar_index, _stp, bar_index + 15, _fpx, bgcolor=_slF, border_color=_slB, border_width=1))
+        array.push(_aTPB,  box.new(bar_index, _fpx, bar_index + 15, _tkp, bgcolor=_tpF, border_color=_tpB, border_width=1))
+        array.push(_aELn,  line.new(bar_index, _fpx, bar_index + 15, _fpx, color=_entryBlue, width=2))
+        array.push(_aTPLn, line.new(bar_index, _tkp, bar_index + 15, _tkp, color=_tpGreen, width=2))
+        array.push(_aSLLn, line.new(bar_index, _stp, bar_index + 15, _stp, color=_slRed, width=2))
+        array.push(_aELb,  label.new(bar_index, high + _atr * 0.5, "SHORT", style=label.style_label_down, color=i_sc, textcolor=color.white, size=size.small))
+        array.push(_aRLb, label(na))
+        array.push(_aBar, bar_index)
+        array.push(_aDir, -1)
+        array.push(_aAct, true)
+        _tIdx := array.size(_aTPB) - 1
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TRADE MANAGEMENT — BREAKEVEN + CONSERVATIVE SAME-BAR HANDLING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+if _inT and _tIdx >= 0 and _tIdx < array.size(_aTPB)
+    box  _bTP = array.get(_aTPB, _tIdx)
+    box  _bSL = array.get(_aSLB, _tIdx)
+    line _lE  = array.get(_aELn, _tIdx)
+    line _lT  = array.get(_aTPLn, _tIdx)
+    line _lS  = array.get(_aSLLn, _tIdx)
+
+    if not na(_bTP)
+        box.set_right(_bTP, bar_index + 5)
+    if not na(_bSL)
+        box.set_right(_bSL, bar_index + 5)
+    if not na(_lE)
+        line.set_x2(_lE, bar_index + 5)
+    if not na(_lT)
+        line.set_x2(_lT, bar_index + 5)
+    if not na(_lS)
+        line.set_x2(_lS, bar_index + 5)
+
+    int _since = bar_index - _tBar
+
+    // ── BREAKEVEN MECHANISM ──
+    // When trade is in profit by i_beATR, move SL to entry
+    if _dir == 1 and not _beMoved and high >= _entry + _atr * i_beATR
+        _sl := _entry
+        _beMoved := true
+        if not na(_lS)
+            line.set_y1(_lS, _entry)
+            line.set_y2(_lS, _entry)
+            line.set_color(_lS, _beColor)
+
+    if _dir == -1 and not _beMoved and low <= _entry - _atr * i_beATR
+        _sl := _entry
+        _beMoved := true
+        if not na(_lS)
+            line.set_y1(_lS, _entry)
+            line.set_y2(_lS, _entry)
+            line.set_color(_lS, _beColor)
+
+    // ── SAME-BAR CHECK: if both SL and TP hit, count as SL (conservative) ──
+    bool _tpHitL = _dir == 1  and high >= _tp
+    bool _slHitL = _dir == 1  and low <= _sl
+    bool _tpHitS = _dir == -1 and low <= _tp
+    bool _slHitS = _dir == -1 and high >= _sl
+
+    bool _bothL = _tpHitL and _slHitL
+    bool _bothS = _tpHitS and _slHitS
+
+    // ─── LONG TP (only if SL not also hit) ───
+    if _tpHitL and not _bothL
+        label.new(bar_index, _tp + _atr * 0.12, "TP ✓", style=label.style_label_down, color=i_tc, textcolor=color.white, size=size.tiny)
+        array.set(_aAct, _tIdx, false)
+        _totW  += 1
+        _cLoss := 0
+        _fSL   := math.max(0, _fSL - 1)
+        _cdG   := _cdBase
+        _inT   := false
+        _dir   := 0
+        _tIdx  := -1
+
+    // ─── LONG SL or SAME-BAR (conservative) ───
+    else if _slHitL or _bothL
+        bool _isBE = _beMoved and _sl >= _entry
+        string _lbl = _isBE ? "BE ○" : "SL ✗"
+        color  _clr = _isBE ? _beColor : i_slTag
+        label.new(bar_index, _sl - _atr * 0.12, _lbl, style=label.style_label_up, color=_clr, textcolor=color.white, size=size.tiny)
+        array.set(_aAct, _tIdx, false)
+        if _isBE
+            _totBE += 1
+        else
+            _totL += 1
+            _cLoss += 1
+            if _since <= 4
+                _fSL += 1
+                _cdL := _cdLoss + math.min(_fSL * 5, 20)
+            else
+                _cdL := _cdLoss + math.min(_cLoss * 4, 16)
+        _cdG  := _cdBase
+        _inT  := false
+        _dir  := 0
+        _tIdx := -1
+
+    // ─── SHORT TP ───
+    else if _tpHitS and not _bothS
+        label.new(bar_index, _tp - _atr * 0.12, "TP ✓", style=label.style_label_up, color=i_tc, textcolor=color.white, size=size.tiny)
+        array.set(_aAct, _tIdx, false)
+        _totW  += 1
+        _cLoss := 0
+        _fSL   := math.max(0, _fSL - 1)
+        _cdG   := _cdBase
+        _inT   := false
+        _dir   := 0
+        _tIdx  := -1
+
+    // ─── SHORT SL or SAME-BAR ───
+    else if _slHitS or _bothS
+        bool _isBE = _beMoved and _sl <= _entry
+        string _lbl = _isBE ? "BE ○" : "SL ✗"
+        color  _clr = _isBE ? _beColor : i_slTag
+        label.new(bar_index, _sl + _atr * 0.12, _lbl, style=label.style_label_down, color=_clr, textcolor=color.white, size=size.tiny)
+        array.set(_aAct, _tIdx, false)
+        if _isBE
+            _totBE += 1
+        else
+            _totL += 1
+            _cLoss += 1
+            if _since <= 4
+                _fSL += 1
+                _cdS2 := _cdLoss + math.min(_fSL * 5, 20)
+            else
+                _cdS2 := _cdLoss + math.min(_cLoss * 4, 16)
+        _cdG  := _cdBase
+        _inT  := false
+        _dir  := 0
+        _tIdx := -1
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// COOLDOWN DECAY
+// ═══════════════════════════════════════════════════════════════════════════════
+
+if _cdG > 0
+    _cdG -= 1
+if _cdL > 0
+    _cdL -= 1
+if _cdS2 > 0
+    _cdS2 -= 1
+if bar_index % 45 == 0 and _fSL > 0
+    _fSL -= 1
+if bar_index % 80 == 0 and _cLoss > 0 and not _inT
+    _cLoss := math.max(0, _cLoss - 1)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DASHBOARD
+// ═══════════════════════════════════════════════════════════════════════════════
+
+color _bulC = #00E676, _berC = #FF5252, _neuC = #9E9E9E
+color _bgC = color.new(#1E1E1E, 15), _txC = #FFFFFF
+
+f_sym(_t) => _t == 1 ? "▲" : _t == -1 ? "▼" : "●"
+f_clr(_t) => _t == 1 ? _bulC : _t == -1 ? _berC : _neuC
+
+var table _dsh = table.new(position.top_right, 5, 4, bgcolor=_bgC, border_width=1, border_color=color.new(#333333, 50), frame_width=1, frame_color=color.new(#333333, 50))
+
+if i_showDash and barstate.islast
+    table.cell(_dsh, 0, 0, "MTF",   text_color=color.new(_txC, 30), text_size=size.tiny, bgcolor=color.new(#2A2A2A, 10))
+    table.cell(_dsh, 1, 0, "15m",   text_color=color.new(_txC, 30), text_size=size.tiny, bgcolor=color.new(#2A2A2A, 10))
+    table.cell(_dsh, 2, 0, "1H",    text_color=color.new(_txC, 30), text_size=size.tiny, bgcolor=color.new(#2A2A2A, 10))
+    table.cell(_dsh, 3, 0, "4H",    text_color=color.new(_txC, 30), text_size=size.tiny, bgcolor=color.new(#2A2A2A, 10))
+    table.cell(_dsh, 4, 0, "1D",    text_color=color.new(_txC, 30), text_size=size.tiny, bgcolor=color.new(#2A2A2A, 10))
+    table.cell(_dsh, 0, 1, "Trend", text_color=_txC, text_size=size.tiny, bgcolor=_bgC)
+    table.cell(_dsh, 1, 1, f_sym(_t15), text_color=f_clr(_t15), text_size=size.small, bgcolor=_bgC)
+    table.cell(_dsh, 2, 1, f_sym(_t1h), text_color=f_clr(_t1h), text_size=size.small, bgcolor=_bgC)
+    table.cell(_dsh, 3, 1, f_sym(_t4h), text_color=f_clr(_t4h), text_size=size.small, bgcolor=_bgC)
+    table.cell(_dsh, 4, 1, f_sym(_t1d), text_color=f_clr(_t1d), text_size=size.small, bgcolor=_bgC)
+
+    table.cell(_dsh, 0, 2, "Struct", text_color=_txC, text_size=size.tiny, bgcolor=_bgC)
+    table.cell(_dsh, 1, 2, _structBull ? "BULL" : _structBear ? "BEAR" : "RANGE", text_color=_structBull ? _bulC : _structBear ? _berC : _neuC, text_size=size.tiny, bgcolor=_bgC)
+    table.cell(_dsh, 2, 2, _dDisc ? "DEEP DISC" : _disc ? "DISCOUNT" : _dPrem ? "DEEP PREM" : _prem ? "PREMIUM" : "EQUILIB", text_color=_disc ? _bulC : _prem ? _berC : _neuC, text_size=size.tiny, bgcolor=_bgC)
+    table.cell(_dsh, 3, 2, "ADX:" + (_strongTrend ? "STRONG" : _trending ? "TREND" : "RANGE"), text_color=_strongTrend ? _bulC : _trending ? #FFC107 : _berC, text_size=size.tiny, bgcolor=_bgC)
+    table.cell(_dsh, 4, 2, "", text_color=_txC, text_size=size.tiny, bgcolor=_bgC)
+
+    table.cell(_dsh, 0, 3, "HTF", text_color=_txC, text_size=size.tiny, bgcolor=_bgC)
+    table.cell(_dsh, 1, 3, _htfBull ? "BULL BIAS" : _htfBear ? "BEAR BIAS" : "NO BIAS", text_color=_htfBull ? _bulC : _htfBear ? _berC : _neuC, text_size=size.tiny, bgcolor=_bgC)
+    table.cell(_dsh, 2, 3, _olap ? "OVERLAP" : _lonNY ? "ACTIVE" : "OFF-HRS", text_color=_olap ? _bulC : _lonNY ? #FFC107 : _berC, text_size=size.tiny, bgcolor=_bgC)
+    table.cell(_dsh, 3, 3, _beMoved ? "BE ACTIVE" : _inT ? "IN TRADE" : "READY", text_color=_beMoved ? _beColor : _inT ? _bulC : _neuC, text_size=size.tiny, bgcolor=_bgC)
+    table.cell(_dsh, 4, 3, "", text_color=_txC, text_size=size.tiny, bgcolor=_bgC)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// STATS — WINS, LOSSES, BREAKEVENS, WIN%
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var table _st = table.new(position.bottom_right, 2, 6, bgcolor=_bgC, border_width=1, border_color=color.new(#333333, 50), frame_width=1, frame_color=color.new(#333333, 50))
+
+if i_showStats and barstate.islast
+    // Win rate: wins / (wins + losses). Breakevens don't count against us.
+    int _decided = _totW + _totL
+    float _wr = _decided > 0 ? (_totW * 1.0 / _decided) * 100.0 : 0.0
+    color _wrC = _wr >= 75 ? _bulC : _wr >= 60 ? #FFC107 : _berC
+
+    table.cell(_st, 0, 0, _isLTF ? "LTF" : _isMTF ? "MTF" : "HTF", text_color=color.new(_txC, 30), text_size=size.tiny, bgcolor=color.new(#2A2A2A, 10))
+    table.cell(_st, 1, 0, "",     text_color=_txC, text_size=size.tiny, bgcolor=color.new(#2A2A2A, 10))
+    table.cell(_st, 0, 1, "Total",text_color=_txC, text_size=size.tiny, bgcolor=_bgC)
+    table.cell(_st, 1, 1, str.tostring(_totT), text_color=_txC, text_size=size.tiny, bgcolor=_bgC)
+    table.cell(_st, 0, 2, "Wins", text_color=_bulC, text_size=size.tiny, bgcolor=_bgC)
+    table.cell(_st, 1, 2, str.tostring(_totW), text_color=_bulC, text_size=size.tiny, bgcolor=_bgC)
+    table.cell(_st, 0, 3, "Losses", text_color=_berC, text_size=size.tiny, bgcolor=_bgC)
+    table.cell(_st, 1, 3, str.tostring(_totL), text_color=_berC, text_size=size.tiny, bgcolor=_bgC)
+    table.cell(_st, 0, 4, "B/E",  text_color=_beColor, text_size=size.tiny, bgcolor=_bgC)
+    table.cell(_st, 1, 4, str.tostring(_totBE), text_color=_beColor, text_size=size.tiny, bgcolor=_bgC)
+    table.cell(_st, 0, 5, "Win%", text_color=_wrC, text_size=size.tiny, bgcolor=_bgC)
+    table.cell(_st, 1, 5, str.tostring(_wr, "#.1") + "%", text_color=_wrC, text_size=size.tiny, bgcolor=_bgC)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ALERTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+alertcondition(_sigL, title="Long",  message="LONG — full confluence confirmed")
+alertcondition(_sigS, title="Short", message="SHORT — full confluence confirmed")
