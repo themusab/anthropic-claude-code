@@ -893,46 +893,45 @@ if shortX
       comment          = 'SX')
 
 // ══════════════════════════════════════════════════════════════════════════════
-// ═══════════════════  SWIFT ALGO VISUALS SECTION  ═══════════════════════════
+// ═══════════════════  MINIMALIST VISUALS SECTION  ══════════════════════════
 // ══════════════════════════════════════════════════════════════════════════════
-// All visual output is wrapped here. Core entry/exit math is untouched above.
+// All visual output below. Core entry/exit math is untouched above.
 
-// ——————————— Swift Algo Color Palette
-color SA_LONG_COLOR   = #00FF00   // Vibrant Lime/Green for Long & TP
-color SA_SHORT_COLOR  = #DC143C   // Bright Crimson for Short
-color SA_TP_COLOR     = #00FF00   // Lime for TP hits
-color SA_ENTRY_COLOR  = #1E90FF   // DodgerBlue for entry line
-color SA_SL_COLOR     = #FF0000   // Pure Red for SL zone
-color SA_TEXT_COLOR   = #FFFFFF   // High-contrast white
+// ——————————— Color Palette
+color C_LONG  = color.new(#00ffbb, 0)   // Minty green for Long
+color C_SHORT = color.new(#ff0055, 0)   // Hot pink/red for Short
+color C_TP    = color.new(#00ffbb, 0)   // Same green for TP
+color C_SL    = color.new(#ff0055, 0)   // Same red for SL zone
+color C_ENTRY = color.new(#1E90FF, 0)   // DodgerBlue for entry
+color C_WHITE = #FFFFFF
 
-// ——————————— Clean Status Line: hide all plot values from status line
-// Use display.pane to render ONLY on chart pane, hiding from status line
-c_tp_sa      = leTrigger or seTrigger ? na :
-               condition == 0.0       ? na : SA_TP_COLOR
-c_entry_sa   = leTrigger or seTrigger ? na :
-               condition == 0.0       ? na : SA_ENTRY_COLOR
-c_sl_sa      = leTrigger or seTrigger ? na :
-               condition == 0.0       ? na : SA_SL_COLOR
+// ——————————— Price-Line Plots (display.none hides from status line)
+c_tp_vis     = leTrigger or seTrigger ? na :
+               condition == 0.0       ? na : C_TP
+c_entry_vis  = leTrigger or seTrigger ? na :
+               condition == 0.0       ? na : C_ENTRY
+c_sl_vis     = leTrigger or seTrigger ? na :
+               condition == 0.0       ? na : C_SL
 
-p_tp1Line    = plot (
+p_tp1Line    = plot(
   condition ==  1.0 or
   condition == -1.0 ? tp1Line : na,
   title      = "TP Line 1",
-  color      = c_tp_sa,
+  color      = c_tp_vis,
   linewidth  = 1,
   style      = plot.style_linebr,
-  display    = display.pane)
-p_tp2Line    = plot (
+  display    = display.none)
+p_tp2Line    = plot(
   condition ==  1.0 or
   condition == -1.0 or
   condition ==  1.1 or
   condition == -1.1 ? tp2Line : na,
   title      = "TP Line 2",
-  color      = c_tp_sa,
+  color      = c_tp_vis,
   linewidth  = 1,
   style      = plot.style_linebr,
-  display    = display.pane)
-p_tp3Line    = plot (
+  display    = display.none)
+p_tp3Line    = plot(
   condition ==  1.0 or
   condition == -1.0 or
   condition ==  1.1 or
@@ -940,19 +939,19 @@ p_tp3Line    = plot (
   condition ==  1.2 or
   condition == -1.2 ? tp3Line : na,
   title      = "TP Line 3",
-  color      = c_tp_sa,
+  color      = c_tp_vis,
   linewidth  = 1,
   style      = plot.style_linebr,
-  display    = display.pane)
-p_entryLine  = plot (
+  display    = display.none)
+p_entryLine  = plot(
   condition >=  1.0 or
   condition <= -1.0 ? entryLine : na,
   title      = "Entry Line",
-  color      = c_entry_sa,
+  color      = c_entry_vis,
   linewidth  = 1,
   style      = plot.style_linebr,
-  display    = display.pane)
-p_slLine     = plot (
+  display    = display.none)
+p_slLine     = plot(
   condition ==  1.0 or
   condition == -1.0 or
   condition ==  1.1 or
@@ -960,280 +959,140 @@ p_slLine     = plot (
   condition ==  1.2 or
   condition == -1.2 ? slLine : na,
   title      = "SL Line",
-  color      = c_sl_sa,
+  color      = c_sl_vis,
   linewidth  = 1,
   style      = plot.style_linebr,
-  display    = display.pane)
-fill(
-  p_tp3Line, p_entryLine,
-  color      = leTrigger or seTrigger ? na : color.new(SA_TP_COLOR, 88))
-fill(
-  p_entryLine, p_slLine,
-  color      = leTrigger or seTrigger ? na : color.new(SA_SL_COLOR, 88))
+  display    = display.none)
 
-// ——————————— Swift Algo: Entry Labels (label.new with Swift Algo styling)
-// Long Entry Label — Lime green, label_up, below bar
-if i_alertOn and longE
-    label.new(
-      x         = bar_index,
-      y         = low,
-      text      = 'Long',
-      style     = label.style_label_up,
-      yloc      = yloc.belowbar,
-      color     = SA_LONG_COLOR,
-      textcolor = SA_TEXT_COLOR,
-      size      = size.small)
+// ——————————— Entry Signals (plotshape — fires once per crossover/crossunder)
+plotshape(
+  i_alertOn and longE,
+  title      = 'Long Signal',
+  text       = 'Long',
+  style      = shape.labelup,
+  location   = location.belowbar,
+  color      = C_LONG,
+  textcolor  = C_WHITE,
+  size       = size.small)
 
-// Short Entry Label — Crimson, label_down, above bar
-if i_alertOn and shortE
-    label.new(
-      x         = bar_index,
-      y         = high,
-      text      = 'Short',
-      style     = label.style_label_down,
-      yloc      = yloc.abovebar,
-      color     = SA_SHORT_COLOR,
-      textcolor = SA_TEXT_COLOR,
-      size      = size.small)
+plotshape(
+  i_alertOn and shortE,
+  title      = 'Short Signal',
+  text       = 'Short',
+  style      = shape.labeldown,
+  location   = location.abovebar,
+  color      = C_SHORT,
+  textcolor  = C_WHITE,
+  size       = size.small)
 
-// Close Label
-if i_alertOn and (longX or shortX)
-    label.new(
-      x         = bar_index,
-      y         = close,
-      text      = 'Close',
-      style     = label.style_label_up,
-      yloc      = yloc.belowbar,
-      color     = color.gray,
-      textcolor = SA_TEXT_COLOR,
-      size      = size.small)
+// ——————————— TP Labels (plotshape at target price — fires once per cross)
+plotshape(
+  i_alertOn and (longTP1 or shortTP1) ? close : na,
+  title      = 'TP1',
+  text       = 'TP',
+  style      = shape.labelup,
+  location   = location.absolute,
+  color      = C_TP,
+  textcolor  = C_WHITE,
+  size       = size.tiny)
 
-// ——————————— Swift Algo: TP Labels (Lime green, no SL tags on chart)
-// TP1 Hit
-if i_alertOn and (longTP1 or shortTP1)
-    label.new(
-      x         = bar_index,
-      y         = longTP1 ? high : low,
-      text      = 'TP1',
-      style     = longTP1 ? label.style_label_down : label.style_label_up,
-      yloc      = longTP1 ? yloc.abovebar : yloc.belowbar,
-      color     = SA_TP_COLOR,
-      textcolor = SA_TEXT_COLOR,
-      size      = size.small)
+plotshape(
+  i_alertOn and (longTP2 or shortTP2) ? close : na,
+  title      = 'TP2',
+  text       = 'TP',
+  style      = shape.labelup,
+  location   = location.absolute,
+  color      = C_TP,
+  textcolor  = C_WHITE,
+  size       = size.tiny)
 
-// TP2 Hit
-if i_alertOn and (longTP2 or shortTP2)
-    label.new(
-      x         = bar_index,
-      y         = longTP2 ? high : low,
-      text      = 'TP2',
-      style     = longTP2 ? label.style_label_down : label.style_label_up,
-      yloc      = longTP2 ? yloc.abovebar : yloc.belowbar,
-      color     = SA_TP_COLOR,
-      textcolor = SA_TEXT_COLOR,
-      size      = size.small)
+plotshape(
+  i_alertOn and (longTP3 or shortTP3) ? close : na,
+  title      = 'TP3',
+  text       = 'TP',
+  style      = shape.labelup,
+  location   = location.absolute,
+  color      = C_TP,
+  textcolor  = C_WHITE,
+  size       = size.tiny)
 
-// TP3 Hit
-if i_alertOn and (longTP3 or shortTP3)
-    label.new(
-      x         = bar_index,
-      y         = longTP3 ? high : low,
-      text      = 'TP3',
-      style     = longTP3 ? label.style_label_down : label.style_label_up,
-      yloc      = longTP3 ? yloc.abovebar : yloc.belowbar,
-      color     = SA_TP_COLOR,
-      textcolor = SA_TEXT_COLOR,
-      size      = size.small)
+// SL tags intentionally removed — no SL/Stop Loss text on chart.
 
-// NOTE: SL text tags are intentionally removed from the chart per requirements.
-// The SL zone is still visually shown via the TP/SL boxes below.
+// ——————————— Close Signal
+plotshape(
+  i_alertOn and (longX or shortX) ? close : na,
+  title      = 'Close',
+  text       = 'Close',
+  style      = shape.labelup,
+  location   = location.absolute,
+  color      = color.gray,
+  textcolor  = C_WHITE,
+  size       = size.tiny)
 
-// ——————————— Swift Algo: Dynamic TP/SL Zone Boxes
-// On each new entry signal, draw a box from entry to TP3 (green zone) and
-// entry to SL (red zone). Old boxes are deleted to keep the chart clean.
-var box sa_tp_box = na
-var box sa_sl_box = na
+// ══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════  TP/SL ZONE BOX FUNCTION  ═════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════════
+// Draws a single TP zone box and a single SL zone box on each new signal.
+// box.delete() on the previous box ensures only the current trade is visible.
 
-if longE or shortE
-    // Delete previous boxes to prevent clutter
-    box.delete(sa_tp_box)
-    box.delete(sa_sl_box)
+var box zone_tp = na
+var box zone_sl = na
 
-    // Determine box boundaries based on long or short direction
-    float box_tp_top    = na
-    float box_tp_bottom = na
-    float box_sl_top    = na
-    float box_sl_bottom = na
+f_draw_zone_boxes(_longE, _shortE, _entry, _tp3, _sl) =>
+    var box _bxTP = na
+    var box _bxSL = na
 
-    if longE
-        box_tp_top    := tp3Line
-        box_tp_bottom := entryLine
-        box_sl_top    := entryLine
-        box_sl_bottom := slLine
-    else if shortE
-        box_tp_top    := entryLine
-        box_tp_bottom := tp3Line
-        box_sl_top    := slLine
-        box_sl_bottom := entryLine
+    if _longE or _shortE
+        // Delete previous boxes — only current trade visible
+        box.delete(_bxTP)
+        box.delete(_bxSL)
 
-    // TP Zone Box (green, semi-transparent)
-    sa_tp_box := box.new(
-      left         = bar_index,
-      top          = box_tp_top,
-      right        = bar_index + 30,
-      bottom       = box_tp_bottom,
-      border_color = color.new(SA_TP_COLOR, 40),
-      bgcolor      = color.new(SA_TP_COLOR, 85),
-      border_width = 1,
-      border_style = line.style_dashed,
-      text         = 'TP Zone',
-      text_color   = color.new(SA_TP_COLOR, 20),
-      text_halign  = text.align_center,
-      text_valign  = text.align_center,
-      text_size    = size.tiny)
+        float tp_top = na, float tp_bot = na
+        float sl_top = na, float sl_bot = na
 
-    // SL Zone Box (red, semi-transparent)
-    sa_sl_box := box.new(
-      left         = bar_index,
-      top          = box_sl_top,
-      right        = bar_index + 30,
-      bottom       = box_sl_bottom,
-      border_color = color.new(SA_SL_COLOR, 40),
-      bgcolor      = color.new(SA_SL_COLOR, 85),
-      border_width = 1,
-      border_style = line.style_dashed,
-      text         = 'SL Zone',
-      text_color   = color.new(SA_SL_COLOR, 20),
-      text_halign  = text.align_center,
-      text_valign  = text.align_center,
-      text_size    = size.tiny)
+        if _longE
+            tp_top := _tp3,   tp_bot := _entry
+            sl_top := _entry, sl_bot := _sl
+        else
+            tp_top := _entry, tp_bot := _tp3
+            sl_top := _sl,    sl_bot := _entry
 
-// Extend active boxes to current bar to keep them dynamic
-if not na(sa_tp_box)
-    box.set_right(sa_tp_box, bar_index + 10)
-if not na(sa_sl_box)
-    box.set_right(sa_sl_box, bar_index + 10)
+        _bxTP := box.new(
+          left         = bar_index,
+          top          = tp_top,
+          right        = bar_index + 20,
+          bottom       = tp_bot,
+          border_color = color.new(#00ffbb, 50),
+          bgcolor      = color.new(#00ffbb, 88),
+          border_width = 1,
+          border_style = line.style_dashed)
 
-// Delete boxes when position is closed (condition returns to 0)
-if (condition == 0.0 and condition[1] != 0.0)
-    box.delete(sa_tp_box)
-    box.delete(sa_sl_box)
+        _bxSL := box.new(
+          left         = bar_index,
+          top          = sl_top,
+          right        = bar_index + 20,
+          bottom       = sl_bot,
+          border_color = color.new(#ff0055, 50),
+          bgcolor      = color.new(#ff0055, 88),
+          border_width = 1,
+          border_style = line.style_dashed)
 
-// ——————————— Swift Algo: Right-Side Level Labels (TP/SL/Entry with prices)
-// @function        Queues a new element in an array and de-queues its first element.
-f_qDq(_array, _val) =>
-    array.push(_array, _val)
-    _return = array.shift(_array)
-    _return
+    // Extend boxes dynamically with price
+    if not na(_bxTP)
+        box.set_right(_bxTP, bar_index + 10)
+    if not na(_bxSL)
+        box.set_right(_bxSL, bar_index + 10)
 
-var line[]  a_slLine     = array.new_line(1)
-var line[]  a_entryLine  = array.new_line(1)
-var line[]  a_tp3Line    = array.new_line(1)
-var line[]  a_tp2Line    = array.new_line(1)
-var line[]  a_tp1Line    = array.new_line(1)
-var label[] a_slLabel    = array.new_label(1)
-var label[] a_tp3label   = array.new_label(1)
-var label[] a_tp2label   = array.new_label(1)
-var label[] a_tp1label   = array.new_label(1)
-var label[] a_entryLabel = array.new_label(1)
+    [_bxTP, _bxSL]
 
-newEntry     = longE or shortE
-entryIndex   = 1
-entryIndex  := newEntry ? bar_index : nz(entryIndex[1])
-lasTrade     = bar_index >= entryIndex
-l_right      = 10
+[zone_tp_out, zone_sl_out] = f_draw_zone_boxes(longE, shortE, entryLine, tp3Line, slLine)
+zone_tp := zone_tp_out
+zone_sl := zone_sl_out
 
-line.delete(
-  f_qDq(a_slLine,
-  line.new(
-   entryIndex,
-   slLine,
-   last_bar_index + l_right,
-   slLine,
-   style = line.style_solid,
-   color = c_sl_sa)))
-line.delete(
-  f_qDq(a_entryLine,
-  line.new(
-   entryIndex,
-   entryLine,
-   last_bar_index + l_right,
-   entryLine,
-   style = line.style_solid,
-   color = SA_ENTRY_COLOR)))
-line.delete(
-  f_qDq(a_tp3Line,
-  line.new(
-   entryIndex,
-   tp3Line,
-   last_bar_index + l_right,
-   tp3Line,
-   style = line.style_solid,
-   color = c_tp_sa)))
-line.delete(
-  f_qDq(a_tp2Line,
-  line.new(
-   entryIndex,
-   tp2Line,
-   last_bar_index + l_right,
-   tp2Line,
-   style = line.style_solid,
-   color = c_tp_sa)))
-line.delete(
-  f_qDq(a_tp1Line,
-  line.new(
-   entryIndex,
-   tp1Line,
-   last_bar_index + l_right,
-   tp1Line,
-   style = line.style_solid,
-   color = c_tp_sa)))
-
-label.delete(
-  f_qDq(a_slLabel,
-  label.new(
-   last_bar_index + l_right,
-   slLine,
-   'SL: ' + str.tostring(slLine, '##.###'),
-   style = label.style_label_left,
-   textcolor  = SA_TEXT_COLOR,
-   color = c_sl_sa)))
-label.delete(
-  f_qDq(a_entryLabel,
-  label.new(
-   last_bar_index + l_right,
-   entryLine,
-   'Entry: ' + str.tostring(entryLine, '##.###'),
-   style = label.style_label_left,
-   textcolor  = SA_TEXT_COLOR,
-   color = SA_ENTRY_COLOR)))
-label.delete(
-  f_qDq(a_tp3label,
-  label.new(
-   last_bar_index + l_right,
-   tp3Line,
-   'TP3: ' + str.tostring(tp3Line, '##.###'),
-   style = label.style_label_left,
-   textcolor  = SA_TEXT_COLOR,
-   color = c_tp_sa)))
-label.delete(
-  f_qDq(a_tp2label,
-  label.new(
-   last_bar_index + l_right,
-   tp2Line,
-   'TP2: ' + str.tostring(tp2Line, '##.###'),
-   style = label.style_label_left,
-   textcolor  = SA_TEXT_COLOR,
-   color = c_tp_sa)))
-label.delete(
-  f_qDq(a_tp1label,
-  label.new(
-   last_bar_index + l_right,
-   tp1Line,
-   'TP1: ' + str.tostring(tp1Line, '##.###'),
-   style = label.style_label_left,
-   textcolor  = SA_TEXT_COLOR,
-   color = c_tp_sa)))
+// Delete boxes when trade closes
+if condition == 0.0 and condition[1] != 0.0
+    box.delete(zone_tp)
+    box.delete(zone_sl)
 
 //#endregion }
 // ——————————— <↑↑↑ G_RISK ↑↑↑>
@@ -1248,20 +1107,19 @@ plot(
   na,
   title      = "─── <debug> ───",
   editable   = false,
-  display    = display.data_window)
+  display    = display.none)
 plot(
   condition,
   title      = "condition",
   editable   = false,
-  display    = display.data_window)
+  display    = display.none)
 plot(
   strategy.position_size * 100,
   title      = ".position_size",
   editable   = false,
-  display    = display.data_window)
+  display    = display.none)
 
 // ——————————— <alerts>
-//<any_alert_function_call>
 if longE or shortE or longX or shortX
     alert(message = 'Any Alert',   freq = alert.freq_once_per_bar_close)
 if longE
